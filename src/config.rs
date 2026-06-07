@@ -44,11 +44,11 @@ pub struct Cli {
     pub s0: bool,
 
     /// FSRS-7 scheduling penalties.
-    #[arg(long, default_value_t = false)]
+    #[arg(long = "sched_penalties", default_value_t = false)]
     pub sched_penalties: bool,
 
     /// Treat Hard and Easy as Good.
-    #[arg(long, default_value_t = false)]
+    #[arg(long = "two_buttons", default_value_t = false)]
     pub two_buttons: bool,
 
     /// Path to revlogs/*.parquet.
@@ -64,15 +64,15 @@ pub struct Cli {
     pub duration: bool,
 
     /// Exclude reviews with elapsed_days=0 from the test set.
-    #[arg(long, default_value_t = false)]
+    #[arg(long = "no_test_same_day", default_value_t = false)]
     pub no_test_same_day: bool,
 
     /// Exclude reviews with elapsed_days=0 from the train set.
-    #[arg(long, default_value_t = false)]
+    #[arg(long = "no_train_same_day", default_value_t = false)]
     pub no_train_same_day: bool,
 
     /// Only test with reviews that would be included in non-secs tests.
-    #[arg(long, default_value_t = false)]
+    #[arg(long = "equalize_test_with_non_secs", default_value_t = false)]
     pub equalize_test_with_non_secs: bool,
 
     /// Save raw predictions to raw/<name>.jsonl.
@@ -100,23 +100,23 @@ pub struct Cli {
     pub weights: bool,
 
     /// Train and test on the same data.
-    #[arg(long, default_value_t = false)]
+    #[arg(long = "train_equals_test", default_value_t = false)]
     pub train_equals_test: bool,
 
     /// Number of TimeSeriesSplit folds.
-    #[arg(long, default_value_t = 5)]
+    #[arg(long = "n_splits", default_value_t = 5)]
     pub n_splits: usize,
 
     /// Batch size for training models.
-    #[arg(long, default_value_t = 512)]
+    #[arg(long = "batch_size", default_value_t = 512)]
     pub batch_size: usize,
 
     /// Max sequence length for batching inputs.
-    #[arg(long, default_value_t = 64)]
+    #[arg(long = "max_seq_len", default_value_t = 64)]
     pub max_seq_len: usize,
 
     /// PyTorch intra-op threads (parity flag; affects nothing in Rust yet).
-    #[arg(long, default_value_t = 1)]
+    #[arg(long = "torch_num_threads", default_value_t = 1)]
     pub torch_num_threads: usize,
 }
 
