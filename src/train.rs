@@ -146,6 +146,9 @@ pub trait BatchModel {
     /// Apply the model's parameter clipper after an optimizer step (default: none).
     /// Mirrors `Trainer`'s `apply_parameter_clipper`.
     fn clip_params(&self, _params: &mut [f64]) {}
+    /// Constrain the gradient before the optimizer step (default: none). Mirrors
+    /// `apply_gradient_constraints` (e.g. FSRS-4/4.5 zero the first 4 params' gradient).
+    fn grad_mask(&self, _grad: &mut [f64]) {}
 }
 
 /// Hyperparameters for a training run (from `BaseModel` unless overridden).
@@ -220,7 +223,8 @@ pub fn train_with_init<M: BatchModel>(m: &M, tc: &TrainConfig, init: Vec<f64>) -
         }
         let order_b = gen.randperm(batch_nums);
         for &bi in &order_b {
-            let g = m.grad(&params, &batches[bi]);
+            let mut g = m.grad(&params, &batches[bi]);
+            m.grad_mask(&mut g);
             adam.step(&mut params, &g, lr);
             m.clip_params(&mut params);
             lr = cosine_advance(lr, t_max, step);

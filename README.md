@@ -60,7 +60,8 @@ Verified on the `--short --secs` configuration (the recommended FSRS setting).
 | FSRS v1 | ✅ | −0.0009 (better) | ✅ verified¹ |
 | FSRS v2 | ✅ | −0.004 (better) | ✅ verified¹ |
 | FSRS v3 | ✅ | −0.005 (better) | ✅ verified¹ |
-| FSRS v4, v4.5, v5, v6 | — | — | ⏳ porting (need S0-init) |
+| FSRS v4 | ✅ | +0.000000 | ✅ verified |
+| FSRS v4.5, v5, v6 | — | — | ⏳ porting |
 | ACT-R | — | — | ⏳ porting |
 | Ebisu v2 | — | — | ⏳ porting |
 | FSRS-7 | — | — | ⏸ deferred² |
