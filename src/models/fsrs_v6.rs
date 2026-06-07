@@ -208,8 +208,16 @@ pub fn process(ds: &Dataset, cfg: &Config) -> ModelOutput {
     let mut p = Vec::new();
     let mut last_w = INIT_W.to_vec();
 
-    for s in splits {
-        let train = &rows[..s.test_start];
+    // `--train_equals_test`: train on ALL rows and test on the tail (rows from the first
+    // split's test fold onward), as a single fold. Else the normal per-split loop.
+    let iters: Vec<(usize, usize, usize)> = if cfg.train_equals_test {
+        vec![(rows.len(), splits[0].test_start, rows.len())]
+    } else {
+        splits.iter().map(|s| (s.test_start, s.test_start, s.test_end)).collect()
+    };
+
+    for (train_end, test_start, test_end) in iters {
+        let train = &rows[..train_end];
         let w = if cfg.default_params {
             INIT_W.to_vec()
         } else {
@@ -226,7 +234,7 @@ pub fn process(ds: &Dataset, cfg: &Config) -> ModelOutput {
                 train::train_with_init(&model, &tc, init.to_vec())
             }
         };
-        let test = &rows[s.test_start..s.test_end];
+        let test = &rows[test_start..test_end];
         let tm = Model::build(ds, test, &vec![1.0; test.len()], None, INIT_W, cfg);
         let all: Vec<usize> = (0..tm.rows.len()).collect();
         for (i, pr) in tm.predict(&w, &all).into_iter().enumerate() {
