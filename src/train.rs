@@ -6,6 +6,8 @@
 //! Bit-exactness is not required (rule #5 is a ±0.0005 tolerance), so batch order uses a
 //! cheap deterministic RNG rather than reproducing torch's `randperm`.
 
+use crate::autodiff::round_scalar as r;
+
 /// Adam (torch defaults: betas (0.9, 0.999), eps 1e-8, no weight decay).
 pub struct Adam {
     b1: f64,
@@ -29,17 +31,18 @@ impl Adam {
     }
 
     /// One Adam step with an explicit learning rate (set by the cosine schedule).
+    /// Under the `fp32` feature every result is rounded to f32 (mirrors torch's f32 Adam).
     pub fn step(&mut self, params: &mut [f64], grad: &[f64], lr: f64) {
         self.t += 1.0;
-        let bc1 = 1.0 - self.b1.powf(self.t);
-        let bc2 = 1.0 - self.b2.powf(self.t);
+        let bc1 = r(1.0 - self.b1.powf(self.t));
+        let bc2 = r(1.0 - self.b2.powf(self.t));
         for i in 0..params.len() {
-            let g = grad[i];
-            self.m[i] = self.b1 * self.m[i] + (1.0 - self.b1) * g;
-            self.v[i] = self.b2 * self.v[i] + (1.0 - self.b2) * g * g;
-            let mhat = self.m[i] / bc1;
-            let vhat = self.v[i] / bc2;
-            params[i] -= lr * mhat / (vhat.sqrt() + self.eps);
+            let g = r(grad[i]);
+            self.m[i] = r(self.b1 * self.m[i] + (1.0 - self.b1) * g);
+            self.v[i] = r(self.b2 * self.v[i] + (1.0 - self.b2) * g * g);
+            let mhat = r(self.m[i] / bc1);
+            let vhat = r(self.v[i] / bc2);
+            params[i] = r(params[i] - r(lr * mhat / (r(vhat.sqrt()) + self.eps)));
         }
     }
 }
@@ -178,9 +181,12 @@ impl Default for TrainConfig {
 
 #[inline]
 fn bce(p: f64, y: f64) -> f64 {
-    let eps = f64::EPSILON;
-    let pc = p.clamp(eps, 1.0 - eps);
-    -(y * pc.ln() + (1.0 - y) * (1.0 - pc).ln())
+    // Match torch's `binary_cross_entropy`: clamp each log term to min -100 (NOT clamp p to
+    // eps, which would cap the log at ~-36). For chaotic models this changes the best-weights
+    // selection — confidently-wrong predictions are penalized up to 100, as in torch.
+    let lp = p.ln().max(-100.0);
+    let lq = (1.0 - p).ln().max(-100.0);
+    -(y * lp + (1.0 - y) * lq)
 }
 
 /// Mean weighted BCE over all rows (the `Trainer.eval` train-loss when test_set=None).

@@ -15,6 +15,12 @@ runtime path for now.
 cargo build --release          # binary: target/release/script
 ```
 
+**Build features:**
+
+| Feature | Effect |
+| --- | --- |
+| `fp32` | Round every model forward / gradient / Adam result to **f32** precision (mimics torch's f32), instead of the default f64. Experiment-only — `cargo build --release --features fp32`. The default build is f64. |
+
 ## Run
 
 ```bash

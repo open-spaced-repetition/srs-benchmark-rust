@@ -141,6 +141,20 @@ advanced once per epoch). `train.rs` reproduces ATen's **MT19937 + 32-bit Fisher
 (`T_max = batch_nums*n_epoch`), summed BCE×weights, and best-weights-by-eval-loss all match
 `script.py::Trainer`. Note Rust uses f64 vs torch f32 — fine within the ±0.0005 tolerance.
 
+**BCE clamp (key fix, 2026-06-08):** `train.rs::bce` (used for best-weights selection) must
+clamp each **log term to min −100** (torch's `binary_cross_entropy`), NOT clamp `p` to
+`f64::EPSILON` (which caps the log at ≈−36). The −36 cap under-penalized confidently-wrong
+predictions, so on chaotic models the selector accepted overfit epochs torch rejects — e.g.
+FSRSv1 plain user 541 (rust trained to worse weights / LogLoss 3.82; torch kept init / 3.35).
+Fixing the clamp made FSRSv1 plain pass (+0.000947 → +0.000445) and pulled the whole FSRS
+family's short-secs diffs from ~−0.002 toward ~0 (closer to torch). The `fp32` experiment was
+what ruled out precision and forced finding this — the divergence was structural, not f32-vs-f64.
+
+**`fp32` build feature (2026-06-08, kept):** `cargo build --features fp32` rounds every
+autodiff + Adam result to f32 (mimics torch); default is f64 (no-op). Experiment showed f32
+does NOT meaningfully change FSRS results (plain configs use f32-exact integer intervals).
+Keep f64 as default. `autodiff::round_scalar` is the toggle.
+
 **Rule #5 is ONE-SIDED (Andrew 2026-06-07):** PASS iff `mean_rust − mean_upstream ≤
 0.0005`. Lower (better) is always fine — f64 finds slightly better optima than torch f32 on
 chaotic models (extreme `0.9^(t/s)`/`2^d` predictions → a few users amplify f64-vs-f32

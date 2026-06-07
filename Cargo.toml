@@ -9,6 +9,11 @@ license = "MIT"
 name = "script"
 path = "src/main.rs"
 
+[features]
+# Round every model/optimizer arithmetic result to f32 precision (mimics torch's f32).
+# Default build is f64 (the rounding compiles to a no-op). Experiment-only.
+fp32 = []
+
 [dependencies]
 clap = { version = "4", features = ["derive"] }
 serde = { version = "1", features = ["derive"] }

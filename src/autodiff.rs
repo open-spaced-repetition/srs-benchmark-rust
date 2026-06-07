@@ -8,6 +8,22 @@
 //!
 //! Processing is per-row (scalar): `where`/`min`/`max` become ordinary `if`s.
 
+/// Round to f32 precision after each op when the `fp32` feature is on (mimics torch's f32
+/// arithmetic); a no-op for the default f64 build. For IEEE elementary ops, computing in f64
+/// then rounding to f32 yields exactly the f32 result, so this faithfully emulates f32.
+#[inline(always)]
+pub(crate) fn round_scalar(x: f64) -> f64 {
+    #[cfg(feature = "fp32")]
+    {
+        x as f32 as f64
+    }
+    #[cfg(not(feature = "fp32"))]
+    {
+        x
+    }
+}
+use round_scalar as r;
+
 #[derive(Clone, Copy)]
 pub struct Dual<const P: usize> {
     pub v: f64,
@@ -17,59 +33,60 @@ pub struct Dual<const P: usize> {
 impl<const P: usize> Dual<P> {
     /// A constant (zero gradient).
     pub fn c(v: f64) -> Self {
-        Dual { v, g: [0.0; P] }
+        Dual { v: r(v), g: [0.0; P] }
     }
     /// The k-th parameter with value `v` (gradient = unit vector e_k).
     pub fn param(k: usize, v: f64) -> Self {
         let mut g = [0.0; P];
         g[k] = 1.0;
-        Dual { v, g }
+        Dual { v: r(v), g }
     }
 
     pub fn add(self, o: Self) -> Self {
         let mut g = self.g;
         for k in 0..P {
-            g[k] += o.g[k];
+            g[k] = r(g[k] + o.g[k]);
         }
-        Dual { v: self.v + o.v, g }
+        Dual { v: r(self.v + o.v), g }
     }
     pub fn sub(self, o: Self) -> Self {
         let mut g = self.g;
         for k in 0..P {
-            g[k] -= o.g[k];
+            g[k] = r(g[k] - o.g[k]);
         }
-        Dual { v: self.v - o.v, g }
+        Dual { v: r(self.v - o.v), g }
     }
     pub fn mul(self, o: Self) -> Self {
         let mut g = [0.0; P];
         for k in 0..P {
-            g[k] = self.v * o.g[k] + o.v * self.g[k];
+            g[k] = r(self.v * o.g[k] + o.v * self.g[k]);
         }
-        Dual { v: self.v * o.v, g }
+        Dual { v: r(self.v * o.v), g }
     }
     pub fn div(self, o: Self) -> Self {
-        let inv = 1.0 / o.v;
-        let v = self.v * inv;
+        let inv = r(1.0 / o.v);
+        let v = r(self.v * inv);
         let mut g = [0.0; P];
         for k in 0..P {
             // d(a/b) = (a'·b - a·b') / b^2 = a'/b - v·b'/b
-            g[k] = (self.g[k] - v * o.g[k]) * inv;
+            g[k] = r((self.g[k] - v * o.g[k]) * inv);
         }
         Dual { v, g }
     }
 
     pub fn add_c(self, c: f64) -> Self {
         Dual {
-            v: self.v + c,
+            v: r(self.v + r(c)),
             g: self.g,
         }
     }
     pub fn mul_c(self, c: f64) -> Self {
+        let c = r(c);
         let mut g = self.g;
         for k in 0..P {
-            g[k] *= c;
+            g[k] = r(g[k] * c);
         }
-        Dual { v: self.v * c, g }
+        Dual { v: r(self.v * c), g }
     }
     /// `c - self`.
     pub fn c_sub(self, c: f64) -> Self {
@@ -77,46 +94,47 @@ impl<const P: usize> Dual<P> {
         for k in 0..P {
             g[k] = -g[k];
         }
-        Dual { v: c - self.v, g }
+        Dual { v: r(r(c) - self.v), g }
     }
     pub fn neg(self) -> Self {
         self.mul_c(-1.0)
     }
 
     pub fn exp(self) -> Self {
-        let v = self.v.exp();
+        let v = r(self.v.exp());
         let mut g = [0.0; P];
         for k in 0..P {
-            g[k] = v * self.g[k];
+            g[k] = r(v * self.g[k]);
         }
         Dual { v, g }
     }
     pub fn ln(self) -> Self {
-        let inv = 1.0 / self.v;
+        let inv = r(1.0 / self.v);
         let mut g = [0.0; P];
         for k in 0..P {
-            g[k] = self.g[k] * inv;
+            g[k] = r(self.g[k] * inv);
         }
-        Dual { v: self.v.ln(), g }
+        Dual { v: r(self.v.ln()), g }
     }
     /// `self ^ c` for a constant exponent.
     pub fn powf_c(self, c: f64) -> Self {
-        let v = self.v.powf(c);
-        let d = c * self.v.powf(c - 1.0); // dv/dself
+        let c = r(c);
+        let v = r(self.v.powf(c));
+        let d = r(c * self.v.powf(r(c - 1.0))); // dv/dself
         let mut g = [0.0; P];
         for k in 0..P {
-            g[k] = d * self.g[k];
+            g[k] = r(d * self.g[k]);
         }
         Dual { v, g }
     }
     /// `self ^ exp` where the exponent is also a dual. Requires `self.v > 0`.
     pub fn powd(self, e: Self) -> Self {
-        let v = self.v.powf(e.v);
-        let da = e.v * self.v.powf(e.v - 1.0); // dv/dself
-        let de = v * self.v.ln(); // dv/dexp
+        let v = r(self.v.powf(e.v));
+        let da = r(e.v * self.v.powf(r(e.v - 1.0))); // dv/dself
+        let de = r(v * self.v.ln()); // dv/dexp
         let mut g = [0.0; P];
         for k in 0..P {
-            g[k] = da * self.g[k] + de * e.g[k];
+            g[k] = r(da * self.g[k] + de * e.g[k]);
         }
         Dual { v, g }
     }
