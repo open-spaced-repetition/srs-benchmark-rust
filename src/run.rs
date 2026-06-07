@@ -22,13 +22,16 @@ fn process_user(cfg: &Config, user_id: i64) -> Result<Value, String> {
     let t0 = Instant::now();
 
     let raw = read_user_revlogs(&cfg.data_path, user_id)?;
-    let rows = create_features(&raw, cfg)?;
-    if rows.len() < 6 {
+    let ds = create_features(&raw, cfg)?;
+    if ds.len() < 6 {
         return Err(format!("{user_id} does not have enough data."));
     }
 
     let out = match cfg.model_name.as_str() {
-        "AVG" => models::process_avg(&rows, cfg),
+        "AVG" => models::process_avg(&ds, cfg),
+        "SM2" => models::process_sm2(&ds, cfg),
+        "MOVING-AVG" => models::process_moving_avg(&ds, cfg),
+        "HLR" => models::process_hlr(&ds, cfg),
         other => return Err(format!("model '{other}' not yet ported")),
     };
 

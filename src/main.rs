@@ -8,6 +8,7 @@ mod metrics;
 mod models;
 mod run;
 mod split;
+mod train;
 
 use clap::Parser;
 use config::{Cli, Config};

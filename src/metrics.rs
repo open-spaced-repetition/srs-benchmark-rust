@@ -169,3 +169,21 @@ pub fn rmse_bins(rows: &[Row], p: &[f64], weights: Option<&[f64]>) -> f64 {
 pub fn round6(x: f64) -> f64 {
     (x * 1e6).round() / 1e6
 }
+
+/// Python `round(x)` (no ndigits): round half to even ("banker's rounding").
+pub fn py_round_half_even(x: f64) -> f64 {
+    let floor = x.floor();
+    let diff = x - floor;
+    if diff < 0.5 {
+        floor
+    } else if diff > 0.5 {
+        floor + 1.0
+    } else {
+        // exact tie -> round to even
+        if (floor as i64) % 2 == 0 {
+            floor
+        } else {
+            floor + 1.0
+        }
+    }
+}
