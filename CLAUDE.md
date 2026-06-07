@@ -141,12 +141,36 @@ advanced once per epoch). `train.rs` reproduces ATen's **MT19937 + 32-bit Fisher
 (`T_max = batch_nums*n_epoch`), summed BCE×weights, and best-weights-by-eval-loss all match
 `script.py::Trainer`. Note Rust uses f64 vs torch f32 — fine within the ±0.0005 tolerance.
 
-**Verified so far (1k users, vs `result_upstream`):** AVG / SM2 / MOVING-AVG bit-exact;
-**DASH PASS** (mean LogLoss |diff| 6e-6, size exact). **HLR**: size exact, mean LogLoss
-~0.004 off — HLR is *pathologically chaotic* (no clipper, `2^d` stability, extreme
-predictions), so a few users amplify f64-vs-f32/reduction-order noise. **Andrew's call
-(2026-06-07): keep the current f64 HLR** — its mean is slightly LOWER (better) than
-upstream, which is acceptable. Do NOT switch to f32. Keep f64 everywhere.
+**Rule #5 is ONE-SIDED (Andrew 2026-06-07):** PASS iff `mean_rust − mean_upstream ≤
+0.0005`. Lower (better) is always fine — f64 finds slightly better optima than torch f32 on
+chaotic models (extreme `0.9^(t/s)`/`2^d` predictions → a few users amplify f64-vs-f32
+noise), so several read *lower* than upstream. Keep f64 everywhere; do NOT switch to f32.
+
+**VERIFIED (16 models, vs `result_upstream`, `--short --secs`, size exact per-user + sum):**
+AVG/SM2/MOVING-AVG bit-exact; RMSE-BINS-EXPLOIT exact vs *current* Python (upstream file
+stale); DASH +6e-6, DASH[MCM] −5e-6, DASH[ACT-R] +6e-5; HLR −0.004; FSRS v1 −9e-4,
+v2 −0.004, v3 −0.005, v4 +0.000000, v4.5 +2e-4, v5 −2e-4, v6 +2e-4; ACT-R −4e-6.
+(Verified on 200–1000 users; FSRS/ACT-R single-thread is slow so used 200.)
+
+**FSRS autodiff = forward-mode dual numbers** (`autodiff.rs`, `Dual<P>`): the recurrence is
+written ONCE over `Dual<P>`; `P=0` → fast value-only predict, `P=NP` → param gradients.
+Every model's gradient is finite-difference unit-tested. **S0 init** (`models/fsrs_init.rs`)
+= per-first-rating golden-section 1-D fit + interpolation table (replaces scipy.minimize;
+one-sided rule makes a true-minimum search safe). Train hooks in `train.rs`: `clip_params`
+(per-step clipper), `grad_mask` (v4/v4.5 freeze first 4), `eval_penalty` (v5/v6 L2). Per-user
+timing field is **`time_ms`**.
+
+**⚠ PERF (the project's whole point — not yet addressed):** forward-mode is P× the value
+forward, so FSRS training is slow single-thread; ACT-R is worse (O(reviews²) all-pairs).
+Correct but needs a **reverse-mode / batching perf pass** (forward-mode models are the
+oracle). The data pipeline + non-trained models are already fast.
+
+**REMAINING:** Ebisu (port Bayesian-beta math), LogisticRegression, FSRS-rs (import crate),
+FSRS-6-one-step, trivial (Anki/90%/SM2-trainable); non-`--secs` outlier path
+(`remove_outliers`/`remove_non_continuous_rows` — needed for day-interval configs);
+partitions deck/preset, recency (weights wired, verify), equalize, train_equals_test;
+`--raw`/`--file`/`--weights` output; ICI(lowess)/smECE(relplot) metrics; Python path for
+GRU/LSTM/RWKV/Transformer/NN-17; the perf pass.
 
 ## 7. Conventions
 
