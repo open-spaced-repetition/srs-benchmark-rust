@@ -12,6 +12,8 @@ pub mod fsrs_v2;
 pub mod fsrs_v3;
 pub mod fsrs_v4;
 pub mod fsrs_v4dot5;
+pub mod fsrs_v5;
+pub mod fsrs_v6;
 pub mod hlr;
 pub mod moving_avg;
 pub mod rmse_bins_exploit;

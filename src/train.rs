@@ -149,6 +149,12 @@ pub trait BatchModel {
     /// Constrain the gradient before the optimizer step (default: none). Mirrors
     /// `apply_gradient_constraints` (e.g. FSRS-4/4.5 zero the first 4 params' gradient).
     fn grad_mask(&self, _grad: &mut [f64]) {}
+    /// Extra loss term added (once) to the eval objective for best-weights selection, e.g.
+    /// FSRS-5/6's L2 penalty `Σ(w−w0)²/σ² · γ`. The per-batch gradient of this term must be
+    /// added inside `grad`. Default: none.
+    fn eval_penalty(&self, _params: &[f64]) -> f64 {
+        0.0
+    }
 }
 
 /// Hyperparameters for a training run (from `BaseModel` unless overridden).
@@ -186,7 +192,7 @@ fn eval_loss<M: BatchModel>(m: &M, params: &[f64]) -> f64 {
     for i in 0..n {
         loss += m.weight(i) * bce(p[i], m.y(i));
     }
-    loss / n as f64
+    (loss + m.eval_penalty(params)) / n as f64
 }
 
 /// Train a model from its own `init_params`, returning the best parameters by eval loss.
