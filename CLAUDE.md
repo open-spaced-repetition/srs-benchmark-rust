@@ -35,6 +35,15 @@ via `gh auth setup-git`).
    10k users** must stay within **±0.0005** of the original Python result. Reference result
    files: `C:\Users\Andrew\srs-benchmark\result_upstream\*.jsonl` (89 files, mostly 10000
    users each). LogLoss is the binding metric; other metrics are best-effort parity.
+6. **`size` (review count) must be EXACTLY identical** — both the per-user `size` value AND
+   the sum of `size` across all users — versus the original Python, for every config. `size`
+   = `len(y)` = number of evaluation rows for that user. This is NOT a tolerance: it is
+   exact. It means the **feature pipeline's row filtering** (rating filter, `i>128` drop,
+   short-term handling, `delta_t>0` final filter, and — for non-`--secs` — the outlier &
+   non-continuous-row removal) must be reproduced bit-for-bit so the surviving row set, the
+   TimeSeriesSplit, and thus the eval set match exactly. Per-user `size` mismatch ⇒ the port
+   is wrong even if mean LogLoss happens to land within tolerance. **Verify `size` first**
+   (cheap, exact) before trusting LogLoss.
 
 ## 2. Datasets (siblings, read-only — never write there)
 
@@ -87,10 +96,13 @@ for a fresh run). `--raw` → `raw/<name>.jsonl` (`{user, p[round4], y}`).
 cargo build --release          # binary: target/release/script(.exe)
 target\release\script.exe --algo AVG --short --secs --data C:\Users\Andrew\anki-revlogs-3k --processes 16
 ```
-Rust toolchain 1.95 present. Verify a model:
-- run on `anki-revlogs-10k`, then compare mean LogLoss to
-  `srs-benchmark\result_upstream\<name>.jsonl` (mean of `metrics.LogLoss`). Must be within
-  ±0.0005.
+Rust toolchain 1.95 present. Verify a model (in order):
+1. **`size` exact** (rule #6): per-user `size` and the total `sum(size)` must match
+   `srs-benchmark\result_upstream\<name>.jsonl` exactly. Do this first — it validates the
+   feature pipeline / row filtering independently of any model math.
+2. **mean LogLoss within ±0.0005** (rule #5): mean of `metrics.LogLoss` over 10k users.
+
+Run on `anki-revlogs-10k`, then compare to the matching `result_upstream\<name>.jsonl`.
 
 ## 6. Status / phase plan
 

@@ -1,0 +1,5 @@
+# Normalize line endings: store text as LF in the repo (avoids CRLF churn on Windows).
+* text=auto eol=lf
+*.rs text eol=lf
+*.toml text eol=lf
+*.md text eol=lf
