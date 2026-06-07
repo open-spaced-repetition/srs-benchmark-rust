@@ -32,12 +32,14 @@ via `gh auth setup-git`).
 4. **CLI stays identical** — same flags as
    https://github.com/open-spaced-repetition/srs-benchmark#scriptpy-options. See `config.rs`.
 5. **Verify every ported model:** its **unweighted (simple arithmetic) mean LogLoss across
-   1k users** (Andrew, 2026-06-07: 1k, not 10k, to save time) must stay within **±0.0005**
-   of the original Python result. Reference result files:
-   `C:\Users\Andrew\srs-benchmark\result_upstream\*.jsonl` (89 files, 10000 users each;
-   compare the matching first-1000-user subset). LogLoss is the binding metric; other
-   metrics are best-effort parity. (anki-revlogs-3k is a subset of -10k with identical
-   per-user data, so 1k verification can run on the 3k dataset with `--max-user-id 1000`.)
+   1k users** (Andrew, 2026-06-07: 1k, not 10k, to save time) must not be **WORSE (higher)
+   than the original Python by more than 0.0005**. It may be **arbitrarily BETTER (lower)** —
+   one-sided tolerance (Andrew, 2026-06-07). I.e. PASS iff `mean_rust − mean_upstream ≤
+   0.0005`. (Our f64 finds slightly better optima than torch's f32 on chaotic models like
+   HLR/FSRS, giving lower loss — that's fine.) Reference files:
+   `C:\Users\Andrew\srs-benchmark\result_upstream\*.jsonl` (10000 users each; compare the
+   first-1000-user subset). LogLoss is the binding metric; other metrics best-effort.
+   (anki-revlogs-3k ⊂ -10k with identical per-user data → verify on 3k `--max-user-id 1000`.)
 6. **`size` (review count) must be EXACTLY identical** — both the per-user `size` value AND
    the sum of `size` across all users — versus the original Python, for every config. `size`
    = `len(y)` = number of evaluation rows for that user. This is NOT a tolerance: it is
@@ -103,7 +105,8 @@ Rust toolchain 1.95 present. Verify a model (in order):
 1. **`size` exact** (rule #6): per-user `size` and the total `sum(size)` must match
    `srs-benchmark\result_upstream\<name>.jsonl` exactly. Do this first — it validates the
    feature pipeline / row filtering independently of any model math.
-2. **mean LogLoss within ±0.0005** (rule #5): mean of `metrics.LogLoss` over **1k users**.
+2. **mean LogLoss one-sided** (rule #5): `mean_rust − mean_upstream ≤ 0.0005` over **1k
+   users** (better/lower is always fine).
 
 Run with `--data C:\Users\Andrew\anki-revlogs-3k --max-user-id 1000`, then compare to the
 first-1000-user subset of the matching `result_upstream\<name>.jsonl`. (3k ⊂ 10k verified:
