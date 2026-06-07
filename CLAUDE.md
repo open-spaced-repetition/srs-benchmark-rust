@@ -39,7 +39,7 @@ via `gh auth setup-git`).
    HLR/FSRS, giving lower loss — that's fine.) Reference files:
    `C:\Users\Andrew\srs-benchmark\result_upstream\*.jsonl` (10000 users each; compare the
    first-1000-user subset). LogLoss is the binding metric; other metrics best-effort.
-   (anki-revlogs-3k ⊂ -10k with identical per-user data → verify on 3k `--max-user-id 1000`.)
+   (Verify on `anki-revlogs-10k --max-user-id 1000`.)
 6. **`size` (review count) must be EXACTLY identical** — both the per-user `size` value AND
    the sum of `size` across all users — versus the original Python, for every config. `size`
    = `len(y)` = number of evaluation rows for that user. This is NOT a tolerance: it is
@@ -53,8 +53,8 @@ via `gh auth setup-git`).
 ## 2. Datasets (siblings, read-only — never write there)
 
 Hive-partitioned parquet, `revlogs/cards/decks` each split by `user_id=N`:
-- `C:\Users\Andrew\anki-revlogs-3k` — 3000 users; the default for quick iteration.
-- `C:\Users\Andrew\anki-revlogs-10k` — 10000 users (matches upstream); for rule-#5 checks.
+- `C:\Users\Andrew\anki-revlogs-10k` — 10000 users (matches upstream). Use this for all
+  runs/verification; `--max-user-id 1000` selects the first 1000 users for rule-#5 checks.
 
 Parquet schemas:
 - `revlogs/user_id=N/data.parquet`: `card_id, day_offset, rating, state, duration,
@@ -99,7 +99,7 @@ for a fresh run). `--raw` → `raw/<name>.jsonl` (`{user, p[round4], y}`).
 
 ```
 cargo build --release          # binary: target/release/script(.exe)
-target\release\script.exe --algo AVG --short --secs --data C:\Users\Andrew\anki-revlogs-3k --processes 16
+target\release\script.exe --algo AVG --short --secs --data C:\Users\Andrew\anki-revlogs-10k --processes 16
 ```
 Rust toolchain 1.95 present. Verify a model (in order):
 1. **`size` exact** (rule #6): per-user `size` and the total `sum(size)` must match
@@ -108,9 +108,8 @@ Rust toolchain 1.95 present. Verify a model (in order):
 2. **mean LogLoss one-sided** (rule #5): `mean_rust − mean_upstream ≤ 0.0005` over **1k
    users** (better/lower is always fine).
 
-Run with `--data C:\Users\Andrew\anki-revlogs-3k --max-user-id 1000`, then compare to the
-first-1000-user subset of the matching `result_upstream\<name>.jsonl`. (3k ⊂ 10k verified:
-AVG/SM2 match upstream bit-for-bit, so the subset comparison is valid.)
+Run with `--data C:\Users\Andrew\anki-revlogs-10k --max-user-id 1000`, then compare to the
+first-1000-user subset of the matching `result_upstream\<name>.jsonl`.
 
 ## 6. Status / phase plan
 
@@ -127,6 +126,9 @@ Tracked in the task list. Order:
     being changed — don't port it yet).
 - **P6** remaining: LogisticRegression, FSRS-rs, one-step, partitions, equalize, recency,
   non-secs outlier path; Python path for GRU/LSTM/RWKV/Transformer/NN-17.
+  - **FSRS-rs (Andrew 2026-06-07): IMPORT the real `fsrs-rs` crate**
+    (`open-spaced-repetition/fsrs-rs`, the `fsrs` crate) and call it — do NOT reimplement
+    FSRS-6 training by hand. The benchmark's FSRS-rs config is literally that library.
 
 ### Trained-model matching (key finding, 2026-06-07)
 

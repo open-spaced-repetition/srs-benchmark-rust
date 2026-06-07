@@ -37,8 +37,8 @@ run).
 ## Reproduction status
 
 How faithfully each ported algorithm reproduces the upstream Python results, measured on
-**1000 users** of `anki-revlogs-3k` (a subset of the 10k dataset with identical per-user
-data) versus the upstream reference files. Two criteria:
+the first **1000 users** of `anki-revlogs-10k` versus the upstream reference files. Two
+criteria:
 
 - **`size` exact** — the per-user review count *and* its total across users must match the
   Python output **exactly** (validates the feature pipeline / row filtering).
@@ -61,7 +61,8 @@ Verified on the `--short --secs` configuration (the recommended FSRS setting).
 | FSRS v2 | ✅ | −0.004 (better) | ✅ verified¹ |
 | FSRS v3 | ✅ | −0.005 (better) | ✅ verified¹ |
 | FSRS v4 | ✅ | +0.000000 | ✅ verified |
-| FSRS v4.5, v5, v6 | — | — | ⏳ porting |
+| FSRS v4.5 | ✅ | +0.000248 | ✅ verified |
+| FSRS v5, v6 | — | — | ⏳ porting |
 | ACT-R | — | — | ⏳ porting |
 | Ebisu v2 | — | — | ⏳ porting |
 | FSRS-7 | — | — | ⏸ deferred² |
