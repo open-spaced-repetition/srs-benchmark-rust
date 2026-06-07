@@ -146,15 +146,26 @@ advanced once per epoch). `train.rs` reproduces ATen's **MT19937 + 32-bit Fisher
 chaotic models (extreme `0.9^(t/s)`/`2^d` predictions → a few users amplify f64-vs-f32
 noise), so several read *lower* than upstream. Keep f64 everywhere; do NOT switch to f32.
 
-**VERIFIED (17 models, vs `result_upstream`, `--short --secs`, ALL on the full 1000-user
+**VERIFIED (18 models, vs `result_upstream`, `--short --secs`, ALL on the full 1000-user
 basis; size exact per-user + sum for every one):**
-AVG/SM2/MOVING-AVG bit-exact; Ebisu-v2 +0.000000 (well-conditioned — own Lanczos `lgamma` +
+AVG/SM2/MOVING-AVG bit-exact; SM2-trainable −0.000620 (`models/sm2_trainable.rs`, Adam,
+reuses FSRS infra); Ebisu-v2 +0.000000 (well-conditioned — own Lanczos `lgamma` +
 scipy-style `brentq`, `models/ebisu.rs`); RMSE-BINS-EXPLOIT exact vs *current* Python
 (upstream file stale); DASH −6e-6, DASH[MCM] −1e-6, DASH[ACT-R] −5e-5; HLR −0.004352;
 FSRS v1 −0.001477, v2 −0.001793, v3 −0.002348, v4 −0.000341, v4.5 +0.000249, v5 +0.000037,
 v6 +0.000049; ACT-R −0.001420. (Re-verified on 1000 users at 10 threads after Andrew lifted
 the 1-thread limit; the earlier 200/20-user numbers are superseded. All pass the one-sided
 rule; max positive is FSRS-4.5 at +0.000249.)
+
+**NON-`--secs` PATH NOW PORTED + VERIFIED** (`features.rs`: `remove_outliers` +
+`remove_non_continuous_rows`, run only when NOT `--secs`). Key gotcha: new cards log
+`elapsed_days = -1` (not 0), so the "card has an `i==1` row" test (which decides whole-card
+vs `i==2`-only drop) is `first_review.elapsed_days <= 0`. Only `i==2` rows (each card's first
+positive-interval review) are removable, so the only continuity gap can be at `i==2`.
+Verified on the 5 models with `-short` references (1000 users, size exact, sum 32 668 830
+each): SM2 +0.000000, DASH +0.000155, HLR −0.000763, FSRS-5 +0.000001, FSRS-6 −0.000008 —
+all PASS. (No `-short` upstream ref exists for the other ported models → they stay
+`--secs`-only.)
 
 **FSRS autodiff = forward-mode dual numbers** (`autodiff.rs`, `Dual<P>`): the recurrence is
 written ONCE over `Dual<P>`; `P=0` → fast value-only predict, `P=NP` → param gradients.
@@ -169,9 +180,8 @@ forward, so FSRS training is slow single-thread; ACT-R is worse (O(reviews²) al
 Correct but needs a **reverse-mode / batching perf pass** (forward-mode models are the
 oracle). The data pipeline + non-trained models are already fast.
 
-**REMAINING:** LogisticRegression, FSRS-rs (import crate),
-FSRS-6-one-step, trivial (Anki/90%/SM2-trainable); non-`--secs` outlier path
-(`remove_outliers`/`remove_non_continuous_rows` — needed for day-interval configs);
+**REMAINING:** LogisticRegression, FSRS-rs (import crate; reference is `-short` non-secs, now
+unblocked), FSRS-6-one-step (also `-short`), trivial (Anki/90% ConstantModel);
 partitions deck/preset, recency (weights wired, verify), equalize, train_equals_test;
 `--raw`/`--file`/`--weights` output; ICI(lowess)/smECE(relplot) metrics; Python path for
 GRU/LSTM/RWKV/Transformer/NN-17; the perf pass.

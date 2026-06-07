@@ -47,30 +47,35 @@ criteria:
   better optima than torch's f32 on chaotic models, so a few give *lower* loss — that's a
   win, not a failure.)
 
-Verified on the `--short --secs` configuration (the recommended FSRS setting).
+Two configurations are checked wherever upstream publishes a reference: **`--short --secs`**
+(fractional-day intervals — the recommended FSRS setting) and **`--short`** (integer-day
+intervals, which additionally applies the upstream outlier / non-continuous-row removal). A
+`—` in a LogLoss column means upstream has no reference file for that algorithm in that
+configuration.
 
-| Algorithm | `size` exact | mean LogLoss vs upstream | Status |
-| --- | :---: | --- | --- |
-| AVG | ✅ | 0.000000 (bit-exact) | ✅ verified |
-| SM-2 | ✅ | 0.000000 (bit-exact) | ✅ verified |
-| MOVING-AVG | ✅ | 0.000000 (bit-exact) | ✅ verified |
-| DASH | ✅ | −0.000006 | ✅ verified |
-| DASH[MCM] | ✅ | −0.000001 | ✅ verified |
-| DASH[ACT-R] | ✅ | −0.000051 | ✅ verified |
-| HLR | ✅ | −0.004352 (better) | ✅ verified¹ |
-| RMSE-BINS-EXPLOIT | ✅ | 0.000000 vs current Python⁴ | ✅ verified |
-| FSRS v1 | ✅ | −0.001477 (better) | ✅ verified¹ |
-| FSRS v2 | ✅ | −0.001793 (better) | ✅ verified¹ |
-| FSRS v3 | ✅ | −0.002348 (better) | ✅ verified¹ |
-| FSRS v4 | ✅ | −0.000341 | ✅ verified |
-| FSRS-4.5 | ✅ | +0.000249 | ✅ verified |
-| FSRS-5 | ✅ | +0.000037 | ✅ verified |
-| FSRS-6 | ✅ | +0.000049 | ✅ verified |
-| ACT-R | ✅ | −0.001420 (better) | ✅ verified¹ ⁵ |
-| Ebisu v2 | ✅ | +0.000000 | ✅ verified |
-| FSRS-7 | — | — | ⏸ deferred² |
-| LogisticRegression, FSRS-rs | — | — | 📋 planned |
-| GRU, LSTM, RWKV, Transformer, NN-17 | — | — | 🐍 Python path³ |
+| Algorithm | `size` exact | LogLoss `--short --secs` | LogLoss `--short` | Status |
+| --- | :---: | --- | --- | --- |
+| AVG | ✅ | 0.000000 (bit-exact) | — | ✅ verified |
+| SM-2 | ✅ | 0.000000 (bit-exact) | +0.000000 | ✅ verified |
+| SM-2 (trainable) | ✅ | −0.000620 (better) | — | ✅ verified¹ |
+| MOVING-AVG | ✅ | 0.000000 (bit-exact) | — | ✅ verified |
+| DASH | ✅ | −0.000006 | +0.000155 | ✅ verified |
+| DASH[MCM] | ✅ | −0.000001 | — | ✅ verified |
+| DASH[ACT-R] | ✅ | −0.000051 | — | ✅ verified |
+| HLR | ✅ | −0.004352 (better) | −0.000763 (better) | ✅ verified¹ |
+| RMSE-BINS-EXPLOIT | ✅ | 0.000000 vs current Python⁴ | — | ✅ verified |
+| FSRS v1 | ✅ | −0.001477 (better) | — | ✅ verified¹ |
+| FSRS v2 | ✅ | −0.001793 (better) | — | ✅ verified¹ |
+| FSRS v3 | ✅ | −0.002348 (better) | — | ✅ verified¹ |
+| FSRS v4 | ✅ | −0.000341 | — | ✅ verified |
+| FSRS-4.5 | ✅ | +0.000249 | — | ✅ verified |
+| FSRS-5 | ✅ | +0.000037 | +0.000001 | ✅ verified |
+| FSRS-6 | ✅ | +0.000049 | −0.000008 | ✅ verified |
+| ACT-R | ✅ | −0.001420 (better) | — | ✅ verified¹ ⁵ |
+| Ebisu v2 | ✅ | +0.000000 | — | ✅ verified |
+| FSRS-7 | — | — | — | ⏸ deferred² |
+| LogisticRegression, FSRS-rs | — | — | — | 📋 planned |
+| GRU, LSTM, RWKV, Transformer, NN-17 | — | — | — | 🐍 Python path³ |
 
 ¹ Models with extreme predictions (HLR's `2^d`, FSRS's `0.9^(t/s)`, ACT-R's power-law
 activation) have a few chaotic users where tiny f64-vs-f32 float differences amplify. The
@@ -90,8 +95,9 @@ valid reference here — the binding target (rule #5) is the current Python vers
 ⁵ ACT-R is correct but currently slow: its activation is an all-pairs sum over prior
 reviews (O(reviews²) per row), so it's a target for the planned performance pass.
 
-*Currently only the `--secs` feature path is implemented; the non-`--secs` path (which adds
-outlier / non-continuous-row removal) is planned.*
+*Both the `--secs` and non-`--secs` feature paths are implemented; the non-`--secs` path
+reproduces the upstream outlier / non-continuous-row removal exactly, so `size` matches
+bit-for-bit.*
 
 ## Options
 

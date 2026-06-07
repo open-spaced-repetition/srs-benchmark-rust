@@ -11,6 +11,8 @@
 //! ([`Card`]) and each [`Row`] references them via `(card_idx, pos)`; models slice
 //! `cards[card_idx].*[0..pos]` for the prior sequence.
 
+use std::collections::{HashMap, HashSet};
+
 use crate::config::Config;
 
 /// Per-card review sequence (post-preprocessing: after rating filter + `i>128` drop, before
@@ -163,6 +165,10 @@ pub fn create_features(raw: &crate::data::RawRevlogs, cfg: &Config) -> Result<Da
     // --- _compute_histories + _common_postprocessing, per card group ---
     let mut cards: Vec<Card> = Vec::new();
     let mut rows: Vec<Row> = Vec::with_capacity(pre.len());
+    // Per card: whether it has an `i==1` row, i.e. its first review is NOT a positive-interval
+    // review (`elapsed_days <= 0` → `i = cumsum(elapsed_days>0)+1 == 1`; new cards log -1).
+    // Needed by the non-secs outlier/continuity removal to decide whole-card vs i==2-only drops.
+    let mut card_has_i1: Vec<bool> = Vec::new();
 
     let mut start = 0usize;
     while start < pre.len() {
@@ -173,6 +179,7 @@ pub fn create_features(raw: &crate::data::RawRevlogs, cfg: &Config) -> Result<Da
         }
         let group = &pre[start..end];
         let card_idx = cards.len() as u32;
+        card_has_i1.push(group[0].elapsed_days <= 0);
 
         let first_rating = group[0].rating;
         let ratings: Vec<i64> = group.iter().map(|r| r.rating).collect();
@@ -233,12 +240,93 @@ pub fn create_features(raw: &crate::data::RawRevlogs, cfg: &Config) -> Result<Da
         start = end;
     }
 
+    // Non-secs only: outlier + non-continuous-row removal (`remove_outliers` /
+    // `remove_non_continuous_rows`, run in `_common_postprocessing` only when NOT --secs).
+    if !cfg.use_secs_intervals {
+        apply_outlier_continuity_filter(&mut rows, &card_has_i1);
+    }
+
     rows.sort_by_key(|r| r.review_th);
 
     if rows.is_empty() {
         return Err("no data after feature engineering".into());
     }
     Ok(Dataset { rows, cards })
+}
+
+/// `remove_outliers` (per `first_rating`): return the set of `delta_t` (=elapsed_days) cells
+/// removed from the `i==2` rows. `dtmap` maps each delta_t to its row count for this rating.
+fn outlier_removed_deltas(dtmap: &HashMap<i64, i64>, first_rating: i64) -> HashSet<i64> {
+    let total: i64 = dtmap.values().sum();
+    // Iterate cells smallest-count-first, ties broken by larger delta_t first (matches
+    // pandas `sort_values(by=[count, delta_t], ascending=[True, False])`; delta_t is unique
+    // per cell so the order is fully determined).
+    let mut cells: Vec<(i64, i64)> = dtmap.iter().map(|(&dt, &c)| (dt, c)).collect();
+    cells.sort_by(|a, b| a.1.cmp(&b.1).then(b.0.cmp(&a.0)));
+    // Threshold = max(total*0.05, 20). Compute total*0.05 in f64 exactly as Python does.
+    let threshold = (total as f64 * 0.05).max(20.0);
+    let limit = if first_rating != 4 { 100 } else { 365 };
+    let mut removed = HashSet::new();
+    let mut has_been_removed: i64 = 0;
+    for (dt, count) in cells {
+        if (has_been_removed + count) as f64 >= threshold {
+            // Budget reached: only drop "real" outlier cells (rare or extreme interval).
+            if count < 6 || dt > limit {
+                removed.insert(dt);
+                has_been_removed += count;
+            }
+        } else {
+            removed.insert(dt);
+            has_been_removed += count;
+        }
+    }
+    removed
+}
+
+/// Apply the non-secs outlier + continuity removal to `rows` in place.
+///
+/// Only `i==2` rows (each card's first positive-interval review) are eligible for outlier
+/// removal, and continuity truncation can therefore only act at that one position. So a card
+/// whose first-positive `delta_t` is an outlier loses either the whole card (if it has an
+/// `i==1` first review (`elapsed_days <= 0`)) or only the `i==2` row (if its first review
+/// already had a positive interval — then `i==3,4,…` stay continuous and survive).
+fn apply_outlier_continuity_filter(rows: &mut Vec<Row>, card_has_i1: &[bool]) {
+    // Count i==2 rows per (first_rating, delta_t).
+    let mut cells: HashMap<i64, HashMap<i64, i64>> = HashMap::new();
+    for r in rows.iter() {
+        if r.i == 2 {
+            *cells
+                .entry(r.first_rating)
+                .or_default()
+                .entry(r.elapsed_days)
+                .or_default() += 1;
+        }
+    }
+    let removed: HashMap<i64, HashSet<i64>> = cells
+        .iter()
+        .map(|(&fr, dtmap)| (fr, outlier_removed_deltas(dtmap, fr)))
+        .collect();
+
+    // Decide, per card, whether to drop the whole card or just its i==2 row.
+    let mut drop_card: HashSet<u32> = HashSet::new();
+    let mut drop_i2_card: HashSet<u32> = HashSet::new();
+    for r in rows.iter() {
+        if r.i == 2
+            && removed
+                .get(&r.first_rating)
+                .is_some_and(|s| s.contains(&r.elapsed_days))
+        {
+            if card_has_i1[r.card_idx as usize] {
+                drop_card.insert(r.card_idx);
+            } else {
+                drop_i2_card.insert(r.card_idx);
+            }
+        }
+    }
+
+    rows.retain(|r| {
+        !drop_card.contains(&r.card_idx) && !(r.i == 2 && drop_i2_card.contains(&r.card_idx))
+    });
 }
 
 /// Whether `str(delta_t) != "0"`, matching Python. For --secs, delta_t is a float whose
