@@ -23,12 +23,12 @@ target/release/script --algo DASH --short --secs --data ../anki-revlogs-10k --pr
 ```
 
 Output is written to `result/<name>.jsonl`, one JSON object per user (sorted by user id),
-matching the Python `evaluate()` schema plus a per-user `time` field (seconds) so slow
-users can be found:
+matching the Python `evaluate()` schema plus a per-user `time_ms` field (milliseconds) so
+slow users can be found:
 
 ```json
 {"metrics": {"RMSE": .., "LogLoss": .., "RMSE(bins)": .., "AUC": .., "precision@90": ..,
- "recall@90": .., "MBE": ..}, "user": N, "size": M, "parameters": ..., "time": 0.12}
+ "recall@90": .., "MBE": ..}, "user": N, "size": M, "parameters": ..., "time_ms": 123.4}
 ```
 
 Runs resume: users already present in the result file are skipped (delete it for a fresh

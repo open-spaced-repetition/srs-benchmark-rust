@@ -143,6 +143,9 @@ pub trait BatchModel {
     fn predict(&self, params: &[f64], idx: &[usize]) -> Vec<f64>;
     /// Gradient of `sum_i weight_i * BCE(p_i, y_i)` over `idx`, w.r.t. params.
     fn grad(&self, params: &[f64], idx: &[usize]) -> Vec<f64>;
+    /// Apply the model's parameter clipper after an optimizer step (default: none).
+    /// Mirrors `Trainer`'s `apply_parameter_clipper`.
+    fn clip_params(&self, _params: &mut [f64]) {}
 }
 
 /// Hyperparameters for a training run (from `BaseModel` unless overridden).
@@ -219,6 +222,7 @@ pub fn train_with_init<M: BatchModel>(m: &M, tc: &TrainConfig, init: Vec<f64>) -
         for &bi in &order_b {
             let g = m.grad(&params, &batches[bi]);
             adam.step(&mut params, &g, lr);
+            m.clip_params(&mut params);
             lr = cosine_advance(lr, t_max, step);
             step += 1;
         }

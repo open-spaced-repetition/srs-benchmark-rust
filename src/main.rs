@@ -1,5 +1,6 @@
 //! Rust port of srs-benchmark `script.py`.
 
+mod autodiff;
 mod config;
 mod data;
 mod eval;

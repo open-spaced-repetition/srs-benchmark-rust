@@ -34,6 +34,7 @@ fn process_user(cfg: &Config, user_id: i64) -> Result<Value, String> {
         "HLR" => models::hlr::process(&ds, cfg),
         "DASH" => models::dash::process(&ds, cfg),
         "RMSE-BINS-EXPLOIT" => models::rmse_bins_exploit::process(&ds, cfg),
+        "FSRSv3" => models::fsrs_v3::process(&ds, cfg),
         other => return Err(format!("model '{other}' not yet ported")),
     };
 

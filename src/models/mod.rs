@@ -6,6 +6,7 @@
 
 pub mod avg;
 pub mod dash;
+pub mod fsrs_v3;
 pub mod hlr;
 pub mod moving_avg;
 pub mod rmse_bins_exploit;

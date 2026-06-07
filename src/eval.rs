@@ -1,7 +1,7 @@
 //! Builds the per-user result JSON object, mirroring `utils.evaluate`'s `stats` dict.
 //!
-//! Adds a `time` field (per-user wall seconds) per rule #3. ICI/smECE are omitted until
-//! ported (they don't affect the LogLoss/size verification).
+//! Adds a `time_ms` field (per-user wall milliseconds) per rule #3. ICI/smECE are omitted
+//! until ported (they don't affect the LogLoss/size verification).
 
 use serde_json::{Map, Value};
 
@@ -71,8 +71,9 @@ pub fn evaluate(
         }
     }
 
-    // rule #3: per-user processing time (seconds).
-    obj.insert("time".into(), Value::from((time_s * 1e6).round() / 1e6));
+    // rule #3: per-user processing time in milliseconds (rounded to 1e-3 ms = 1 ns).
+    let time_ms = time_s * 1000.0;
+    obj.insert("time_ms".into(), Value::from((time_ms * 1000.0).round() / 1000.0));
 
     let _ = cfg;
     Value::Object(obj)
