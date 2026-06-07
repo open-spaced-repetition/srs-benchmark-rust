@@ -7,6 +7,7 @@
 pub mod act_r;
 pub mod avg;
 pub mod dash;
+pub mod dash_act_r;
 pub mod fsrs_init;
 pub mod fsrs_v1;
 pub mod fsrs_v2;

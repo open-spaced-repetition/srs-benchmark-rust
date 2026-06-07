@@ -8,10 +8,11 @@ use crate::features::{Dataset, Row};
 use crate::split::time_series_split;
 use crate::train::{self, BatchModel, TrainConfig};
 
-/// 8 DASH time-window features (no decay): per window [1,7,30,inf] days, the count of prior
-/// reviews whose time-to-now ≤ window, and how many were successes (rating>1).
-/// `intervals` = `dt_active[1..=pos]` (same length as `prior_ratings`).
-fn dash_features(prior_ratings: &[i64], intervals: &[f64]) -> [f64; 8] {
+/// 8 DASH time-window features: per window [1,7,30,inf] days, the (optionally exp-decayed)
+/// count of prior reviews whose time-to-now ≤ window, and the count of successes (rating>1).
+/// `decay` selects the DASH[MCM] variant (exp(-time/tau) weighting). `intervals` =
+/// `dt_active[1..=pos]` (same length as `prior_ratings`).
+fn dash_features(prior_ratings: &[i64], intervals: &[f64], decay: bool) -> [f64; 8] {
     let n = prior_ratings.len();
     // cumulative_times[k] = sum(intervals[k..]) — time from review k to now.
     let mut cum = vec![0.0f64; n];
@@ -21,13 +22,15 @@ fn dash_features(prior_ratings: &[i64], intervals: &[f64]) -> [f64; 8] {
         cum[k] = s;
     }
     let windows = [1.0, 7.0, 30.0, f64::INFINITY];
+    let tau_w = [0.2434, 1.9739, 16.0090, 129.8426];
     let mut f = [0.0f64; 8];
     for (j, &w) in windows.iter().enumerate() {
         for k in 0..n {
             if cum[k] <= w {
-                f[2 * j] += 1.0;
+                let df = if decay { (-cum[k] / tau_w[j]).exp() } else { 1.0 };
+                f[2 * j] += df;
                 if prior_ratings[k] > 1 {
-                    f[2 * j + 1] += 1.0;
+                    f[2 * j + 1] += df;
                 }
             }
         }
@@ -59,11 +62,11 @@ impl Dash {
         }
     }
 
-    fn from_rows(ds: &Dataset, rows: &[Row], weights: &[f64]) -> Self {
+    fn from_rows(ds: &Dataset, rows: &[Row], weights: &[f64], decay: bool) -> Self {
         let mut feat = Vec::with_capacity(rows.len());
         let mut yv = Vec::with_capacity(rows.len());
         for r in rows {
-            feat.push(dash_features(ds.prior_ratings(r), ds.intervals_from_second(r)));
+            feat.push(dash_features(ds.prior_ratings(r), ds.intervals_from_second(r), decay));
             yv.push(r.y as f64);
         }
         Dash {
@@ -129,6 +132,7 @@ pub fn process(ds: &Dataset, cfg: &Config) -> ModelOutput {
     let splits = time_series_split(rows.len(), cfg.n_splits);
     let tc = TrainConfig::default();
     let init = Dash::init_w(cfg);
+    let decay = cfg.model_name.contains("MCM"); // DASH[MCM] variant
     let mut eval_rows = Vec::new();
     let mut p = Vec::new();
     let mut last_w = init.clone();
@@ -139,11 +143,11 @@ pub fn process(ds: &Dataset, cfg: &Config) -> ModelOutput {
             init.clone()
         } else {
             let weights = recency_weights(train.len(), cfg.use_recency_weighting);
-            let model = Dash::from_rows(ds, train, &weights);
+            let model = Dash::from_rows(ds, train, &weights, decay);
             train::train_with_init(&model, &tc, init.clone())
         };
         let test = &rows[s.test_start..s.test_end];
-        let test_model = Dash::from_rows(ds, test, &vec![1.0; test.len()]);
+        let test_model = Dash::from_rows(ds, test, &vec![1.0; test.len()], decay);
         let all: Vec<usize> = (0..test.len()).collect();
         for (r, pr) in test.iter().zip(test_model.predict(&w, &all)) {
             eval_rows.push(r.clone());

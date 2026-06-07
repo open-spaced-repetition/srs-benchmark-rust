@@ -55,6 +55,8 @@ Verified on the `--short --secs` configuration (the recommended FSRS setting).
 | SM2 | ✅ | 0.000000 (bit-exact) | ✅ verified |
 | MOVING-AVG | ✅ | 0.000000 (bit-exact) | ✅ verified |
 | DASH | ✅ | +0.000006 | ✅ verified |
+| DASH[MCM] | ✅ | −0.000005 | ✅ verified |
+| DASH[ACT-R] | ✅ | +0.000064 | ✅ verified |
 | HLR | ✅ | −0.004 (better) | ✅ verified¹ |
 | RMSE-BINS-EXPLOIT | ✅ | 0.000000 vs current Python⁴ | ✅ verified |
 | FSRS v1 | ✅ | −0.0009 (better) | ✅ verified¹ |
