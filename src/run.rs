@@ -30,6 +30,7 @@ fn process_user(cfg: &Config, user_id: i64) -> Result<Value, String> {
     let out = match cfg.model_name.as_str() {
         "AVG" => models::avg::process(&ds, cfg),
         "SM2" => models::sm2::process(&ds, cfg),
+        "SM2-trainable" => models::sm2_trainable::process(&ds, cfg),
         "MOVING-AVG" => models::moving_avg::process(&ds, cfg),
         "HLR" => models::hlr::process(&ds, cfg),
         "DASH" | "DASH[MCM]" => models::dash::process(&ds, cfg),

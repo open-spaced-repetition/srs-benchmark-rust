@@ -21,6 +21,7 @@ pub mod hlr;
 pub mod moving_avg;
 pub mod rmse_bins_exploit;
 pub mod sm2;
+pub mod sm2_trainable;
 
 use crate::eval::Params;
 use crate::features::Row;
