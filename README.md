@@ -52,7 +52,7 @@ Verified on the `--short --secs` configuration (the recommended FSRS setting).
 | Algorithm | `size` exact | mean LogLoss vs upstream | Status |
 | --- | :---: | --- | --- |
 | AVG | ✅ | 0.000000 (bit-exact) | ✅ verified |
-| SM2 | ✅ | 0.000000 (bit-exact) | ✅ verified |
+| SM-2 | ✅ | 0.000000 (bit-exact) | ✅ verified |
 | MOVING-AVG | ✅ | 0.000000 (bit-exact) | ✅ verified |
 | DASH | ✅ | +0.000006 | ✅ verified |
 | DASH[MCM] | ✅ | −0.000005 | ✅ verified |
@@ -63,9 +63,9 @@ Verified on the `--short --secs` configuration (the recommended FSRS setting).
 | FSRS v2 | ✅ | −0.004 (better) | ✅ verified¹ |
 | FSRS v3 | ✅ | −0.005 (better) | ✅ verified¹ |
 | FSRS v4 | ✅ | +0.000000 | ✅ verified |
-| FSRS v4.5 | ✅ | +0.000248 | ✅ verified |
-| FSRS v5 | ✅ | −0.000242 | ✅ verified |
-| FSRS v6 | ✅ | +0.000156 | ✅ verified |
+| FSRS-4.5 | ✅ | +0.000248 | ✅ verified |
+| FSRS-5 | ✅ | −0.000242 | ✅ verified |
+| FSRS-6 | ✅ | +0.000156 | ✅ verified |
 | ACT-R | ✅ | −0.000004 | ✅ verified⁵ |
 | Ebisu v2 | — | — | ⏳ porting |
 | FSRS-7 | — | — | ⏸ deferred² |
