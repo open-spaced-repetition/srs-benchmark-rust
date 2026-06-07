@@ -57,8 +57,10 @@ Verified on the `--short --secs` configuration (the recommended FSRS setting).
 | DASH | ✅ | +0.000006 | ✅ verified |
 | HLR | ✅ | −0.004 (better) | ✅ verified¹ |
 | RMSE-BINS-EXPLOIT | ✅ | 0.000000 vs current Python⁴ | ✅ verified |
+| FSRS v1 | ✅ | −0.0009 (better) | ✅ verified¹ |
+| FSRS v2 | ✅ | −0.004 (better) | ✅ verified¹ |
 | FSRS v3 | ✅ | −0.005 (better) | ✅ verified¹ |
-| FSRS v1, v2, v4, v4.5, v5, v6 | — | — | ⏳ porting |
+| FSRS v4, v4.5, v5, v6 | — | — | ⏳ porting (need S0-init) |
 | ACT-R | — | — | ⏳ porting |
 | Ebisu v2 | — | — | ⏳ porting |
 | FSRS-7 | — | — | ⏸ deferred² |

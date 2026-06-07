@@ -6,6 +6,8 @@
 
 pub mod avg;
 pub mod dash;
+pub mod fsrs_v1;
+pub mod fsrs_v2;
 pub mod fsrs_v3;
 pub mod hlr;
 pub mod moving_avg;
