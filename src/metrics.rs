@@ -47,9 +47,10 @@ pub fn auc(y: &[i64], p: &[f64]) -> Option<f64> {
     if n_pos == 0 || n_neg == 0 {
         return None;
     }
-    // Rank predictions ascending, averaging tied ranks.
+    // Rank predictions ascending, averaging tied ranks. Use a total order so non-finite
+    // predictions (possible for unregularized models that diverge) never panic.
     let mut idx: Vec<usize> = (0..p.len()).collect();
-    idx.sort_by(|&a, &b| p[a].partial_cmp(&p[b]).unwrap());
+    idx.sort_by(|&a, &b| p[a].total_cmp(&p[b]));
     let mut ranks = vec![0.0f64; p.len()];
     let mut i = 0;
     while i < idx.len() {

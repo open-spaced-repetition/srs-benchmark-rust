@@ -44,31 +44,86 @@ impl Adam {
     }
 }
 
-/// CosineAnnealingLR with eta_min=0: lr(step) = base*(1+cos(pi*step/T_max))/2.
-pub fn cosine_lr(base: f64, t_max: usize, step: usize) -> f64 {
+/// torch CosineAnnealingLR (eta_min=0) uses a *recurrent* update, not the closed form;
+/// in floating point they differ slightly, which matters for chaotic models. This
+/// advances lr from step k to k+1: `lr *= (1+cos(pi*(k+1)/T)) / (1+cos(pi*k/T))`.
+fn cosine_advance(lr: f64, t_max: usize, k: usize) -> f64 {
     if t_max == 0 {
-        return base;
+        return lr;
     }
-    base * (1.0 + (std::f64::consts::PI * step as f64 / t_max as f64).cos()) / 2.0
+    let pi = std::f64::consts::PI;
+    let num = 1.0 + (pi * (k as f64 + 1.0) / t_max as f64).cos();
+    let den = 1.0 + (pi * k as f64 / t_max as f64).cos();
+    lr * num / den
 }
 
-/// xorshift64* — deterministic, fast, good enough for shuffling batch order.
-struct Rng(u64);
-impl Rng {
-    fn next(&mut self) -> u64 {
-        let mut x = self.0;
-        x ^= x >> 12;
-        x ^= x << 25;
-        x ^= x >> 27;
-        self.0 = x;
-        x.wrapping_mul(0x2545F4914F6CDD1D)
-    }
-    fn shuffle(&mut self, v: &mut [usize]) {
-        // Fisher–Yates
-        for i in (1..v.len()).rev() {
-            let j = (self.next() % (i as u64 + 1)) as usize;
-            v.swap(i, j);
+/// ATen's MT19937 engine, reproduced exactly (verified against torch 2.10 for seed 2023).
+/// Used so the batch-visitation order matches `BatchLoader`'s `torch.randperm`, which is
+/// the only uncontrolled source of variance vs the Python trained models.
+pub struct Mt19937 {
+    s: [u32; 624],
+    left: i32,
+    next: usize,
+}
+
+impl Mt19937 {
+    const N: usize = 624;
+    const M: usize = 397;
+    const MATRIX_A: u32 = 0x9908_b0df;
+    const UMASK: u32 = 0x8000_0000;
+    const LMASK: u32 = 0x7fff_ffff;
+
+    pub fn new(seed: u32) -> Self {
+        let mut s = [0u32; 624];
+        s[0] = seed;
+        for j in 1..624 {
+            s[j] = 1812433253u32
+                .wrapping_mul(s[j - 1] ^ (s[j - 1] >> 30))
+                .wrapping_add(j as u32);
         }
+        Mt19937 { s, left: 1, next: 0 }
+    }
+
+    fn next_state(&mut self) {
+        let s = &mut self.s;
+        self.left = Self::N as i32;
+        self.next = 0;
+        for j in 0..(Self::N - Self::M) {
+            let y = (s[j] & Self::UMASK) | (s[j + 1] & Self::LMASK);
+            s[j] = s[j + Self::M] ^ (y >> 1) ^ if y & 1 != 0 { Self::MATRIX_A } else { 0 };
+        }
+        for j in (Self::N - Self::M)..(Self::N - 1) {
+            let y = (s[j] & Self::UMASK) | (s[j + 1] & Self::LMASK);
+            s[j] = s[j - (Self::N - Self::M)] ^ (y >> 1) ^ if y & 1 != 0 { Self::MATRIX_A } else { 0 };
+        }
+        let y = (s[Self::N - 1] & Self::UMASK) | (s[0] & Self::LMASK);
+        s[Self::N - 1] =
+            s[Self::M - 1] ^ (y >> 1) ^ if y & 1 != 0 { Self::MATRIX_A } else { 0 };
+    }
+
+    pub fn next_u32(&mut self) -> u32 {
+        self.left -= 1;
+        if self.left <= 0 {
+            self.next_state();
+        }
+        let mut y = self.s[self.next];
+        self.next += 1;
+        y ^= y >> 11;
+        y ^= (y << 7) & 0x9d2c_5680;
+        y ^= (y << 15) & 0xefc6_0000;
+        y ^= y >> 18;
+        y
+    }
+
+    /// `torch.randperm(n, generator)` for the CPU generator: forward Fisher–Yates with a
+    /// 32-bit draw per step.
+    pub fn randperm(&mut self, n: usize) -> Vec<usize> {
+        let mut r: Vec<usize> = (0..n).collect();
+        for i in 0..n.saturating_sub(1) {
+            let z = (self.next_u32() as usize) % (n - i);
+            r.swap(i, i + z);
+        }
+        r
     }
 }
 
@@ -128,8 +183,14 @@ fn eval_loss<M: BatchModel>(m: &M, params: &[f64]) -> f64 {
     loss / n as f64
 }
 
-/// Train a model, returning the best parameters by eval loss (mirrors `Trainer.train`).
+/// Train a model from its own `init_params`, returning the best parameters by eval loss.
 pub fn train<M: BatchModel>(m: &M, tc: &TrainConfig) -> Vec<f64> {
+    let init = m.init_params();
+    train_with_init(m, tc, init)
+}
+
+/// Train a model from explicit initial parameters (mirrors `Trainer.train`).
+pub fn train_with_init<M: BatchModel>(m: &M, tc: &TrainConfig, init: Vec<f64>) -> Vec<f64> {
     let n = m.n_rows();
     // Batching: stable sort by seq_len, then contiguous chunks of batch_size.
     let mut order: Vec<usize> = (0..n).collect();
@@ -139,12 +200,14 @@ pub fn train<M: BatchModel>(m: &M, tc: &TrainConfig) -> Vec<f64> {
     let batch_nums = batches.len();
     let t_max = batch_nums * tc.n_epoch;
 
-    let mut params = m.init_params();
+    let mut params = init;
     let mut adam = Adam::new(m.n_params(), tc.betas);
     let mut best_loss = f64::INFINITY;
     let mut best_w = params.clone();
-    let mut rng = Rng(2023);
+    // BatchLoader uses a torch.Generator seeded 2023, advanced once per epoch by randperm.
+    let mut gen = Mt19937::new(2023);
     let mut step = 0usize;
+    let mut lr = tc.lr; // lr[0] = base; advanced recurrently after each step
 
     for _epoch in 0..tc.n_epoch {
         let loss = eval_loss(m, &params);
@@ -152,12 +215,11 @@ pub fn train<M: BatchModel>(m: &M, tc: &TrainConfig) -> Vec<f64> {
             best_loss = loss;
             best_w = params.clone();
         }
-        let mut order_b: Vec<usize> = (0..batch_nums).collect();
-        rng.shuffle(&mut order_b);
+        let order_b = gen.randperm(batch_nums);
         for &bi in &order_b {
             let g = m.grad(&params, &batches[bi]);
-            let lr = cosine_lr(tc.lr, t_max, step);
             adam.step(&mut params, &g, lr);
+            lr = cosine_advance(lr, t_max, step);
             step += 1;
         }
     }
@@ -166,4 +228,27 @@ pub fn train<M: BatchModel>(m: &M, tc: &TrainConfig) -> Vec<f64> {
         best_w = params.clone();
     }
     best_w
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn randperm_matches_torch_seed2023() {
+        // Ground truth from torch 2.10 (CPU generator, manual_seed(2023)).
+        let mut g = Mt19937::new(2023);
+        assert_eq!(g.randperm(8), vec![7, 3, 2, 0, 5, 1, 4, 6]);
+        assert_eq!(g.randperm(8), vec![4, 7, 6, 0, 3, 1, 5, 2]);
+        assert_eq!(g.randperm(8), vec![7, 3, 0, 6, 2, 4, 1, 5]);
+
+        let mut g80 = Mt19937::new(2023);
+        let expected80 = vec![
+            39, 42, 62, 41, 53, 19, 63, 60, 28, 67, 11, 66, 54, 73, 45, 8, 6, 77, 51, 4, 68,
+            34, 37, 9, 20, 59, 10, 31, 25, 75, 71, 12, 74, 69, 38, 1, 13, 50, 17, 48, 29, 76,
+            35, 5, 61, 3, 22, 47, 16, 36, 15, 27, 56, 43, 32, 7, 79, 65, 49, 24, 44, 18, 40,
+            33, 57, 64, 46, 72, 30, 0, 2, 55, 52, 14, 58, 23, 26, 21, 78, 70,
+        ];
+        assert_eq!(g80.randperm(80), expected80);
+    }
 }

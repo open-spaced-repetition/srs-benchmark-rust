@@ -65,6 +65,10 @@ impl Dataset {
     pub fn prior_dt_active(&self, row: &Row) -> &[f64] {
         &self.cards[row.card_idx as usize].dt_active[..row.pos as usize]
     }
+    /// Intervals `dt_active[1..=pos]` (length `pos`) — DASH's `t_history` is `t_item[1:]`.
+    pub fn intervals_from_second(&self, row: &Row) -> &[f64] {
+        &self.cards[row.card_idx as usize].dt_active[1..=row.pos as usize]
+    }
     pub fn len(&self) -> usize {
         self.rows.len()
     }

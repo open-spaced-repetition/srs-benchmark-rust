@@ -119,9 +119,22 @@ Tracked in the task list. Order:
 - **P3** TimeSeriesSplit + metrics (LogLoss/RMSE/RMSE(bins)/AUC/MBE/precision@90/recall@90;
   then ICI via lowess, smECE via relplot).
 - **P4** non-trainable: AVG, SM2, MOVING-AVG, Ebisu, RMSE-BINS-EXPLOIT (verify ±0.0005).
-- **P5** Adam-trained: HLR, DASH, ACT-R, FSRS v1–v7 + Rust Adam/autodiff.
+- **P5** Adam-trained: HLR, DASH, ACT-R, FSRS v1–v6 + Rust Adam/autodiff.
+  - **FSRS-7 is DEFERRED** (Andrew 2026-06-07: the upstream FSRS-7 model is still WIP /
+    being changed — don't port it yet).
 - **P6** remaining: LogisticRegression, FSRS-rs, one-step, partitions, equalize, recency,
   non-secs outlier path; Python path for GRU/LSTM/RWKV/Transformer/NN-17.
+
+### Trained-model matching (key finding, 2026-06-07)
+
+The upstream trained references are **exactly reproducible** by the source Python on this
+machine (HLR sourcePy == upstream to 6 dp). So a ported trained model only has to match the
+Python training algorithm; the one uncontrolled variable is the **batch-visitation order**
+(`BatchLoader` uses `torch.randperm(batch_nums, generator=Generator().manual_seed(2023))`,
+advanced once per epoch). `train.rs` reproduces ATen's **MT19937 + 32-bit Fisher–Yates
+`randperm` exactly** (unit-tested vs torch 2.10). Adam (no weight decay), CosineAnnealingLR
+(`T_max = batch_nums*n_epoch`), summed BCE×weights, and best-weights-by-eval-loss all match
+`script.py::Trainer`. Note Rust uses f64 vs torch f32 — fine within the ±0.0005 tolerance.
 
 ## 7. Conventions
 

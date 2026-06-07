@@ -32,6 +32,7 @@ fn process_user(cfg: &Config, user_id: i64) -> Result<Value, String> {
         "SM2" => models::process_sm2(&ds, cfg),
         "MOVING-AVG" => models::process_moving_avg(&ds, cfg),
         "HLR" => models::process_hlr(&ds, cfg),
+        "DASH" => models::process_dash(&ds, cfg),
         other => return Err(format!("model '{other}' not yet ported")),
     };
 
