@@ -4,6 +4,7 @@
 //! (concatenation of the per-split test folds, in split order), the matching predictions
 //! `p`, and any trained parameters to record.
 
+pub mod act_r;
 pub mod avg;
 pub mod dash;
 pub mod fsrs_init;

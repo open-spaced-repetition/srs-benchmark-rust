@@ -69,6 +69,11 @@ impl Dataset {
     pub fn intervals_from_second(&self, row: &Row) -> &[f64] {
         &self.cards[row.card_idx as usize].dt_active[1..=row.pos as usize]
     }
+    /// Intervals `dt_active[0..=pos]` (length `pos+1`, incl. current) — ACT-R's cumulative
+    /// time tensor is `cumsum` of this.
+    pub fn dt_active_incl(&self, row: &Row) -> &[f64] {
+        &self.cards[row.card_idx as usize].dt_active[..=row.pos as usize]
+    }
     pub fn len(&self) -> usize {
         self.rows.len()
     }

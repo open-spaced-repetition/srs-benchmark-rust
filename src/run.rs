@@ -33,6 +33,7 @@ fn process_user(cfg: &Config, user_id: i64) -> Result<Value, String> {
         "MOVING-AVG" => models::moving_avg::process(&ds, cfg),
         "HLR" => models::hlr::process(&ds, cfg),
         "DASH" => models::dash::process(&ds, cfg),
+        "ACT-R" => models::act_r::process(&ds, cfg),
         "RMSE-BINS-EXPLOIT" => models::rmse_bins_exploit::process(&ds, cfg),
         "FSRSv1" => models::fsrs_v1::process(&ds, cfg),
         "FSRSv2" => models::fsrs_v2::process(&ds, cfg),

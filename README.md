@@ -64,7 +64,7 @@ Verified on the `--short --secs` configuration (the recommended FSRS setting).
 | FSRS v4.5 | ✅ | +0.000248 | ✅ verified |
 | FSRS v5 | ✅ | −0.000242 | ✅ verified |
 | FSRS v6 | ✅ | +0.000156 | ✅ verified |
-| ACT-R | — | — | ⏳ porting |
+| ACT-R | ✅ | −0.000004 | ✅ verified⁵ |
 | Ebisu v2 | — | — | ⏳ porting |
 | FSRS-7 | — | — | ⏸ deferred² |
 | LogisticRegression, FSRS-rs | — | — | 📋 planned |
@@ -84,6 +84,9 @@ Python runtime path.
 ⁴ The Rust output is bit-identical to the *current* Python source. The committed upstream
 `result/` file for this model is stale (predates a model/pipeline change), so it is not a
 valid reference here — the binding target (rule #5) is the current Python version.
+
+⁵ ACT-R is correct but currently slow: its activation is an all-pairs sum over prior
+reviews (O(reviews²) per row), so it's a target for the planned performance pass.
 
 *Currently only the `--secs` feature path is implemented; the non-`--secs` path (which adds
 outlier / non-continuous-row removal) is planned.*
