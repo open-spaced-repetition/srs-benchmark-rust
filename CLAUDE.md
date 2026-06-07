@@ -136,8 +136,24 @@ advanced once per epoch). `train.rs` reproduces ATen's **MT19937 + 32-bit Fisher
 (`T_max = batch_nums*n_epoch`), summed BCE×weights, and best-weights-by-eval-loss all match
 `script.py::Trainer`. Note Rust uses f64 vs torch f32 — fine within the ±0.0005 tolerance.
 
+**Verified so far (1k users, vs `result_upstream`):** AVG / SM2 / MOVING-AVG bit-exact;
+**DASH PASS** (mean LogLoss |diff| 6e-6, size exact). **HLR**: size exact, mean LogLoss
+~0.004 off — HLR is *pathologically chaotic* (no clipper, `2^d` stability, extreme
+predictions), so a few users amplify f64-vs-f32/reduction-order noise. **Andrew's call
+(2026-06-07): keep the current f64 HLR** — its mean is slightly LOWER (better) than
+upstream, which is acceptable. Do NOT switch to f32. Keep f64 everywhere.
+
 ## 7. Conventions
 
+- **One model per file** under `src/models/` (mirrors the Python `models/` layout): each
+  exposes `process(ds, cfg) -> ModelOutput`. Shared training infra (Adam, cosine LR,
+  MT19937 randperm, train loop) lives in `train.rs`; `models/mod.rs` holds `ModelOutput` +
+  `recency_weights`. `run.rs` dispatches `models::<name>::process`.
+- **Reference staleness:** some `result_upstream/*.jsonl` files predate code changes (e.g.
+  RMSE-BINS-EXPLOIT: my port is bit-identical to *current* source Python, but the upstream
+  file differs by ~0.04). Rule #5's target is the *current* Python version — when a model
+  fails vs upstream, check it against the current source Python (`harness`/golden) before
+  assuming a bug.
 - Match Python numerics closely but **bit-exactness is NOT required** (rule #5 is a ±0.0005
   tolerance), which buys freedom on reduction order, batch-shuffle RNG, fp32-vs-fp64, etc.
   Still, prefer the same math/order where cheap, to stay well inside tolerance.

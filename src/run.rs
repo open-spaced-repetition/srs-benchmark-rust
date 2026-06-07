@@ -28,11 +28,12 @@ fn process_user(cfg: &Config, user_id: i64) -> Result<Value, String> {
     }
 
     let out = match cfg.model_name.as_str() {
-        "AVG" => models::process_avg(&ds, cfg),
-        "SM2" => models::process_sm2(&ds, cfg),
-        "MOVING-AVG" => models::process_moving_avg(&ds, cfg),
-        "HLR" => models::process_hlr(&ds, cfg),
-        "DASH" => models::process_dash(&ds, cfg),
+        "AVG" => models::avg::process(&ds, cfg),
+        "SM2" => models::sm2::process(&ds, cfg),
+        "MOVING-AVG" => models::moving_avg::process(&ds, cfg),
+        "HLR" => models::hlr::process(&ds, cfg),
+        "DASH" => models::dash::process(&ds, cfg),
+        "RMSE-BINS-EXPLOIT" => models::rmse_bins_exploit::process(&ds, cfg),
         other => return Err(format!("model '{other}' not yet ported")),
     };
 
