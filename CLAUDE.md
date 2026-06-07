@@ -146,11 +146,15 @@ advanced once per epoch). `train.rs` reproduces ATen's **MT19937 + 32-bit Fisher
 chaotic models (extreme `0.9^(t/s)`/`2^d` predictions → a few users amplify f64-vs-f32
 noise), so several read *lower* than upstream. Keep f64 everywhere; do NOT switch to f32.
 
-**VERIFIED (16 models, vs `result_upstream`, `--short --secs`, size exact per-user + sum):**
-AVG/SM2/MOVING-AVG bit-exact; RMSE-BINS-EXPLOIT exact vs *current* Python (upstream file
-stale); DASH +6e-6, DASH[MCM] −5e-6, DASH[ACT-R] +6e-5; HLR −0.004; FSRS v1 −9e-4,
-v2 −0.004, v3 −0.005, v4 +0.000000, v4.5 +2e-4, v5 −2e-4, v6 +2e-4; ACT-R −4e-6.
-(Verified on 200–1000 users; FSRS/ACT-R single-thread is slow so used 200.)
+**VERIFIED (17 models, vs `result_upstream`, `--short --secs`, ALL on the full 1000-user
+basis; size exact per-user + sum for every one):**
+AVG/SM2/MOVING-AVG bit-exact; Ebisu-v2 +0.000000 (well-conditioned — own Lanczos `lgamma` +
+scipy-style `brentq`, `models/ebisu.rs`); RMSE-BINS-EXPLOIT exact vs *current* Python
+(upstream file stale); DASH −6e-6, DASH[MCM] −1e-6, DASH[ACT-R] −5e-5; HLR −0.004352;
+FSRS v1 −0.001477, v2 −0.001793, v3 −0.002348, v4 −0.000341, v4.5 +0.000249, v5 +0.000037,
+v6 +0.000049; ACT-R −0.001420. (Re-verified on 1000 users at 10 threads after Andrew lifted
+the 1-thread limit; the earlier 200/20-user numbers are superseded. All pass the one-sided
+rule; max positive is FSRS-4.5 at +0.000249.)
 
 **FSRS autodiff = forward-mode dual numbers** (`autodiff.rs`, `Dual<P>`): the recurrence is
 written ONCE over `Dual<P>`; `P=0` → fast value-only predict, `P=NP` → param gradients.
@@ -165,7 +169,7 @@ forward, so FSRS training is slow single-thread; ACT-R is worse (O(reviews²) al
 Correct but needs a **reverse-mode / batching perf pass** (forward-mode models are the
 oracle). The data pipeline + non-trained models are already fast.
 
-**REMAINING:** Ebisu (port Bayesian-beta math), LogisticRegression, FSRS-rs (import crate),
+**REMAINING:** LogisticRegression, FSRS-rs (import crate),
 FSRS-6-one-step, trivial (Anki/90%/SM2-trainable); non-`--secs` outlier path
 (`remove_outliers`/`remove_non_continuous_rows` — needed for day-interval configs);
 partitions deck/preset, recency (weights wired, verify), equalize, train_equals_test;

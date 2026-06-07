@@ -1,7 +1,7 @@
 # srs-benchmark-rust
 
 A Rust port of [open-spaced-repetition/srs-benchmark](https://github.com/open-spaced-repetition/srs-benchmark),
-built to run the same benchmark **much faster** while reproducing the same results.
+built to run the same benchmark **much faster** while ensuring that results don't become significantly worse.
 
 The command-line interface mirrors the Python `script.py` (same flags, same output
 filenames). Model *definitions* remain authored in Python upstream as the canonical spec;
@@ -26,7 +26,7 @@ Output is written to `result/<name>.jsonl`, one JSON object per user (sorted by 
 matching the Python `evaluate()` schema plus a per-user `time_ms` field (milliseconds) so
 slow users can be found:
 
-```json
+```
 {"metrics": {"RMSE": .., "LogLoss": .., "RMSE(bins)": .., "AUC": .., "precision@90": ..,
  "recall@90": .., "MBE": ..}, "user": N, "size": M, "parameters": ..., "time_ms": 123.4}
 ```
@@ -54,29 +54,29 @@ Verified on the `--short --secs` configuration (the recommended FSRS setting).
 | AVG | ✅ | 0.000000 (bit-exact) | ✅ verified |
 | SM-2 | ✅ | 0.000000 (bit-exact) | ✅ verified |
 | MOVING-AVG | ✅ | 0.000000 (bit-exact) | ✅ verified |
-| DASH | ✅ | +0.000006 | ✅ verified |
-| DASH[MCM] | ✅ | −0.000005 | ✅ verified |
-| DASH[ACT-R] | ✅ | +0.000064 | ✅ verified |
-| HLR | ✅ | −0.004 (better) | ✅ verified¹ |
+| DASH | ✅ | −0.000006 | ✅ verified |
+| DASH[MCM] | ✅ | −0.000001 | ✅ verified |
+| DASH[ACT-R] | ✅ | −0.000051 | ✅ verified |
+| HLR | ✅ | −0.004352 (better) | ✅ verified¹ |
 | RMSE-BINS-EXPLOIT | ✅ | 0.000000 vs current Python⁴ | ✅ verified |
-| FSRS v1 | ✅ | −0.0009 (better) | ✅ verified¹ |
-| FSRS v2 | ✅ | −0.004 (better) | ✅ verified¹ |
-| FSRS v3 | ✅ | −0.005 (better) | ✅ verified¹ |
-| FSRS v4 | ✅ | +0.000000 | ✅ verified |
-| FSRS-4.5 | ✅ | +0.000248 | ✅ verified |
-| FSRS-5 | ✅ | −0.000242 | ✅ verified |
-| FSRS-6 | ✅ | +0.000156 | ✅ verified |
-| ACT-R | ✅ | −0.000004 | ✅ verified⁵ |
-| Ebisu v2 | — | — | ⏳ porting |
+| FSRS v1 | ✅ | −0.001477 (better) | ✅ verified¹ |
+| FSRS v2 | ✅ | −0.001793 (better) | ✅ verified¹ |
+| FSRS v3 | ✅ | −0.002348 (better) | ✅ verified¹ |
+| FSRS v4 | ✅ | −0.000341 | ✅ verified |
+| FSRS-4.5 | ✅ | +0.000249 | ✅ verified |
+| FSRS-5 | ✅ | +0.000037 | ✅ verified |
+| FSRS-6 | ✅ | +0.000049 | ✅ verified |
+| ACT-R | ✅ | −0.001420 (better) | ✅ verified¹ ⁵ |
+| Ebisu v2 | ✅ | +0.000000 | ✅ verified |
 | FSRS-7 | — | — | ⏸ deferred² |
 | LogisticRegression, FSRS-rs | — | — | 📋 planned |
 | GRU, LSTM, RWKV, Transformer, NN-17 | — | — | 🐍 Python path³ |
 
-¹ Models with extreme predictions (HLR's `2^d`, FSRS's `0.9^(t/s)`) have a few chaotic users
-where tiny f64-vs-f32 float differences amplify. The training core is proven correct (DASH
-matches to 6e-6, and the per-user *median* diff is ~1e-5); Rust's f64 finds slightly better
-optima, so the mean LogLoss comes out *lower* (better) than upstream — which passes the
-one-sided tolerance.
+¹ Models with extreme predictions (HLR's `2^d`, FSRS's `0.9^(t/s)`, ACT-R's power-law
+activation) have a few chaotic users where tiny f64-vs-f32 float differences amplify. The
+training core is proven correct (DASH matches to 6e-6, and the per-user *median* diff is
+~1e-5); Rust's f64 finds slightly better optima, so the mean LogLoss comes out *lower*
+(better) than upstream — which passes the one-sided tolerance.
 
 ² FSRS-7's model is still being changed upstream, so it is intentionally not ported yet.
 
