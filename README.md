@@ -15,12 +15,6 @@ runtime path for now.
 cargo build --release          # binary: target/release/script
 ```
 
-**Build features:**
-
-| Feature | Effect |
-| --- | --- |
-| `fp32` | Round every model forward / gradient / Adam result to **f32** precision (mimics torch's f32), instead of the default f64. Experiment-only — `cargo build --release --features fp32`. The default build is f64. |
-
 ## Run
 
 ```bash
@@ -50,8 +44,7 @@ criteria:
   Python output **exactly** (validates the feature pipeline / row filtering).
 - **mean LogLoss — one-sided tolerance** — it must not be **worse** (higher) than upstream by
   more than **0.0005**, but may be **better** (lower) by any amount. `(better)` marks configs
-  where Rust's f64 finds a lower loss than torch's f32 (chaotic models — HLR / FSRS v1–v3 /
-  ACT-R) — always allowed by the one-sided rule.
+  where the Rust port scores a lower loss than upstream.
 
 ### Verified — 55 configurations
 
@@ -94,24 +87,24 @@ criteria:
 | `FSRSv2 --short --secs` | ✅ | -0.000303 | ✅ verified |
 | `FSRSv3` | ✅ | -0.000186 | ✅ verified |
 | `FSRSv3 --short --secs` | ✅ | -0.000119 | ✅ verified |
-| `FSRSv4` | ✅ | -0.000525 (better) | ✅ verified |
-| `FSRSv4 --short --secs` | ✅ | -0.000342 | ✅ verified |
-| `FSRS-4.5` | ✅ | -0.000313 | ✅ verified |
-| `FSRS-4.5 --short --secs` | ✅ | +0.000243 | ✅ verified |
-| `FSRS-5 --short` | ✅ | +0.000002 | ✅ verified |
-| `FSRS-5 --short --secs` | ✅ | -0.000060 | ✅ verified |
+| `FSRSv4` | ✅ | -0.000523 (better) | ✅ verified |
+| `FSRSv4 --short --secs` | ✅ | -0.000353 | ✅ verified |
+| `FSRS-4.5` | ✅ | -0.000312 | ✅ verified |
+| `FSRS-4.5 --short --secs` | ✅ | +0.000250 | ✅ verified |
+| `FSRS-5 --short` | ✅ | +0.000001 | ✅ verified |
+| `FSRS-5 --short --secs` | ✅ | +0.000046 | ✅ verified |
 | `FSRS-6 --short` | ✅ | -0.000008 | ✅ verified |
-| `FSRS-6 --short --secs` | ✅ | -0.000026 | ✅ verified |
+| `FSRS-6 --short --secs` | ✅ | -0.000142 | ✅ verified |
 | `FSRS-6 --default --short` | ✅ | -0.000000 | ✅ verified |
 | `FSRS-6 --default --short --secs` | ✅ | -0.000001 | ✅ verified |
 | `FSRS-6 --S0 --short` | ✅ | -0.000007 | ✅ verified |
 | `FSRS-6 --S0 --short --secs` | ✅ | +0.000069 | ✅ verified |
-| `FSRS-6 --two_buttons --short` | ✅ | +0.000002 | ✅ verified |
-| `FSRS-6 --two_buttons --short --secs` | ✅ | +0.000110 | ✅ verified |
-| `FSRS-6 --recency` | ✅ | -0.000007 | ✅ verified |
-| `FSRS-6 --short --recency` | ✅ | -0.000005 | ✅ verified |
-| `FSRS-6 --short --secs --recency` | ✅ | -0.000022 | ✅ verified |
-| `FSRS-6 --short --recency --train_equals_test` | ✅ | +0.000431 | ✅ verified |
+| `FSRS-6 --two_buttons --short` | ✅ | +0.000003 | ✅ verified |
+| `FSRS-6 --two_buttons --short --secs` | ✅ | +0.000168 | ✅ verified |
+| `FSRS-6 --recency` | ✅ | -0.000004 | ✅ verified |
+| `FSRS-6 --short --recency` | ✅ | -0.000006 | ✅ verified |
+| `FSRS-6 --short --secs --recency` | ✅ | +0.000127 | ✅ verified |
+| `FSRS-6 --short --recency --train_equals_test` | ✅ | +0.000430 | ✅ verified |
 
 ### Not yet reproduced — 34 configurations
 

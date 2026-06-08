@@ -189,6 +189,14 @@ one-sided rule makes a true-minimum search safe). Train hooks in `train.rs`: `cl
 (per-step clipper), `grad_mask` (v4/v4.5 freeze first 4), `eval_penalty` (v5/v6 L2). Per-user
 timing field is **`time_ms`**.
 
+**Determinism fix (2026-06-08):** `fit_s0` summed its fit-loss over a `HashMap`'s randomized
+iteration order → non-associative f64 sum → different S0 → non-deterministic init weights →
+non-deterministic results for ALL `fit_s0` models (FSRS v4/v4.5/v5/v6), ~1e-4 on the mean
+(within tolerance but real). Fixed by sorting the grouped `(delta_t, recall, count)` by
+`delta_t` before the loss sum (also matches pandas `groupby` key order). v1–v3 (fixed init)
+and non-fit_s0 models were already deterministic. The `rmse_bins` HashMap also iterates
+randomly but only perturbs RMSE(bins) at ~1e-15 (invisible after `round(,6)`), so it's benign.
+
 **⚠ PERF (the project's whole point — not yet addressed):** forward-mode is P× the value
 forward, so FSRS training is slow single-thread; ACT-R is worse (O(reviews²) all-pairs).
 Correct but needs a **reverse-mode / batching perf pass** (forward-mode models are the

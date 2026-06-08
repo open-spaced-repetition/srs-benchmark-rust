@@ -74,7 +74,7 @@ pub fn fit_s0<FC: Fn(f64, f64) -> f64>(
     let mut rs: [Option<f64>; 5] = [None; 5];
     let mut rc: [f64; 5] = [0.0; 5];
     for fr in 1..=4i64 {
-        let gs: Vec<(f64, f64, f64)> = groups
+        let mut gs: Vec<(f64, f64, f64)> = groups
             .iter()
             .filter(|((g_fr, _), _)| *g_fr == fr)
             .map(|((_, dt_bits), (sy, cnt))| {
@@ -91,6 +91,10 @@ pub fn fit_s0<FC: Fn(f64, f64) -> f64>(
         if gs.is_empty() {
             continue;
         }
+        // Sort by delta_t so the loss summation order is deterministic (HashMap iteration is
+        // randomized) — also matches pandas `groupby` key order. Without this the S0 fit, and
+        // thus all fit_s0 models (FSRS v4/v4.5/v5/v6), are non-deterministic run-to-run.
+        gs.sort_by(|a, b| a.0.total_cmp(&b.0));
         let init_s0 = default_s0[(fr - 1) as usize];
         let secs = cfg.use_secs_intervals;
         let loss = |s: f64| -> f64 {
