@@ -51,7 +51,7 @@ criteria:
 | Configuration | `size` | mean LogLoss vs upstream | Status |
 | --- | :---: | --- | --- |
 | `AVG` | ✅ | +0.000000 | ✅ verified |
-| `AVG --secs` | ✅ | +0.000000 ⁴ | ✅ verified |
+| `AVG --secs` | ✅ | +0.000000 ¹ | ✅ verified |
 | `AVG --short --secs` | ✅ | +0.000000 | ✅ verified |
 | `SM2` | ✅ | +0.000000 | ✅ verified |
 | `SM2 --short` | ✅ | +0.000000 | ✅ verified |
@@ -61,29 +61,29 @@ criteria:
 | `MOVING-AVG` | ✅ | +0.000000 | ✅ verified |
 | `MOVING-AVG --short --secs` | ✅ | +0.000000 | ✅ verified |
 | `RMSE-BINS-EXPLOIT` | ✅ | +0.000000 | ✅ verified |
-| `RMSE-BINS-EXPLOIT --short --secs` | ✅ | -0.019035 (better) ⁴ | ✅ verified |
+| `RMSE-BINS-EXPLOIT --short --secs` | ✅ | -0.019035 (better) ¹ | ✅ verified |
 | `Ebisu-v2` | ✅ | +0.000000 | ✅ verified |
 | `Ebisu-v2 --short --secs` | ✅ | +0.000000 | ✅ verified |
 | `Anki` | ✅ | +0.000027 | ✅ verified |
 | `Anki --default` | ✅ | +0.000000 | ✅ verified |
 | `Anki --short --secs` | ✅ | -0.000142 | ✅ verified |
 | `DASH` | ✅ | +0.000000 | ✅ verified |
-| `DASH --secs` | ✅ | +0.000000 ⁴ | ✅ verified |
+| `DASH --secs` | ✅ | +0.000000 ¹ | ✅ verified |
 | `DASH --short` | ✅ | +0.000155 | ✅ verified |
 | `DASH --short --secs` | ✅ | -0.000006 | ✅ verified |
 | `DASH --recency` | ✅ | -0.001471 (better) | ✅ verified |
 | `DASH[MCM]` | ✅ | -0.000114 | ✅ verified |
-| `DASH[MCM] --secs` | ✅ | +0.000000 ⁴ | ✅ verified |
+| `DASH[MCM] --secs` | ✅ | +0.000000 ¹ | ✅ verified |
 | `DASH[MCM] --short --secs` | ✅ | -0.000001 | ✅ verified |
 | `DASH[ACT-R]` | ✅ | +0.000001 | ✅ verified |
-| `DASH[ACT-R] --secs` | ✅ | -0.000000 ⁴ | ✅ verified |
+| `DASH[ACT-R] --secs` | ✅ | -0.000000 ¹ | ✅ verified |
 | `DASH[ACT-R] --short --secs` | ✅ | -0.000051 | ✅ verified |
 | `HLR` | ✅ | -0.000556 (better) | ✅ verified |
 | `HLR --short` | ✅ | -0.001039 (better) | ✅ verified |
 | `HLR --short --secs` | ✅ | -0.005829 (better) | ✅ verified |
-| `ACT-R` | ✅ | -0.008047 (better) | ✅ verified ⁵ |
-| `ACT-R --secs` | ✅ | -0.011462 (better) ⁴ | ✅ verified ⁵ |
-| `ACT-R --short --secs` | ✅ | -0.001420 (better) | ✅ verified ⁵ |
+| `ACT-R` | ✅ | -0.008047 (better) | ✅ verified ² |
+| `ACT-R --secs` | ✅ | -0.011462 (better) ¹ | ✅ verified ² |
+| `ACT-R --short --secs` | ✅ | -0.001420 (better) | ✅ verified ² |
 | `FSRSv1` | ✅ | +0.000445 | ✅ verified |
 | `FSRSv1 --short --secs` | ✅ | -0.000238 | ✅ verified |
 | `FSRSv2` | ✅ | -0.000368 | ✅ verified |
@@ -121,12 +121,12 @@ criteria:
 | FSRS-7 (10 flag variants) | ⏸ deferred — upstream model still WIP |
 | GRU, LSTM, RWKV, RWKV-P, NN-17, Transformer (14) | 🐍 Python path — Reptile/neural, kept in Python |
 
-⁴ The committed upstream file for this config is **stale** (predates a pipeline change), so it
+¹ The committed upstream file for this config is **stale** (predates a pipeline change), so it
 is not a valid reference — the binding target (rule #5) is the *current* Python source, which
 the Rust output matches. `-secs` configs are verified against a freshly-generated current-
 Python golden (spot-checked on 15 users); everything else is on 1000 users.
 
-⁵ ACT-R is correct but slow — its activation is an O(reviews²) all-pairs sum over prior
+² ACT-R is correct but slow — its activation is an O(reviews²) all-pairs sum over prior
 reviews, a target for the planned performance pass.
 
 *Both the `--secs` and non-`--secs` feature paths are implemented; the non-`--secs` path
