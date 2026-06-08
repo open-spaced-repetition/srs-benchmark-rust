@@ -202,11 +202,16 @@ forward, so FSRS training is slow single-thread; ACT-R is worse (O(reviews²) al
 Correct but needs a **reverse-mode / batching perf pass** (forward-mode models are the
 oracle). The data pipeline + non-trained models are already fast.
 
-**REMAINING:** LogisticRegression, FSRS-rs (import crate; reference is `-short` non-secs, now
-unblocked), FSRS-6-one-step (also `-short`), trivial (Anki/90% ConstantModel);
-partitions deck/preset, recency (weights wired, verify), equalize, train_equals_test;
-`--raw`/`--file`/`--weights` output; ICI(lowess)/smECE(relplot) metrics; Python path for
-GRU/LSTM/RWKV/Transformer/NN-17; the perf pass.
+**DONE since:** Anki (3 configs), `--recency`/`--two_buttons`(binary)/`--S0`/`--default`/
+`--train_equals_test` flag variants, and `--partitions deck/preset` (FSRS-6, isolated
+`process_partitioned` branch + `data::read_user_partition_map` cards→decks join). 61 configs
+verified. **Determinism + BCE-clamp bugs fixed** (see notes above).
+
+**REMAINING:** LogisticRegression (34 features + recency [+equalize]), FSRS-rs (import crate;
+`-short` non-secs), FSRS-6-one-step (online per-review SGD; `-short`), 90%/ConstantModel (no
+upstream ref → can't verify); `--equalize_test_with_non_secs`; `--raw`/`--file`/`--weights`
+output; ICI(lowess)/smECE(relplot) metrics; Python path for GRU/LSTM/RWKV/Transformer/NN-17;
+the perf pass. FSRS-7 deferred (10 configs).
 
 ## 7. Conventions
 

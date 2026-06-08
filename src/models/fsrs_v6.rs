@@ -199,11 +199,36 @@ impl BatchModel for Model<'_> {
     }
 }
 
+/// Fit S0 then train one FSRS-6 weight set on `train` (or just the S0-init for `--S0`, or
+/// `INIT_W` for `--default`). Shared by the global, train_equals_test, and per-partition paths.
+fn train_weights(ds: &Dataset, train: &[Row], cfg: &Config, tc: &TrainConfig, default_decay: f64) -> Vec<f64> {
+    if cfg.default_params {
+        return INIT_W.to_vec();
+    }
+    let s0 = fit_s0(ds, train, cfg, [INIT_W[0], INIT_W[1], INIT_W[2], INIT_W[3]], |t, s| {
+        fc_val(t, s, default_decay)
+    });
+    let mut init = INIT_W;
+    init[0..4].copy_from_slice(&s0);
+    if cfg.only_s0 {
+        init.to_vec()
+    } else {
+        let weights = recency_weights(train.len(), cfg.use_recency_weighting);
+        let model = Model::build(ds, train, &weights, Some(cfg.max_seq_len), init, cfg);
+        train::train_with_init(&model, tc, init.to_vec())
+    }
+}
+
 pub fn process(ds: &Dataset, cfg: &Config) -> ModelOutput {
     let rows = &ds.rows;
     let splits = time_series_split(rows.len(), cfg.n_splits);
     let tc = TrainConfig::default();
     let default_decay = -INIT_W[20];
+
+    if cfg.partitions != "none" {
+        return process_partitioned(ds, cfg, &tc, default_decay);
+    }
+
     let mut eval_rows = Vec::new();
     let mut p = Vec::new();
     let mut last_w = INIT_W.to_vec();
@@ -218,22 +243,7 @@ pub fn process(ds: &Dataset, cfg: &Config) -> ModelOutput {
 
     for (train_end, test_start, test_end) in iters {
         let train = &rows[..train_end];
-        let w = if cfg.default_params {
-            INIT_W.to_vec()
-        } else {
-            let s0 = fit_s0(ds, train, cfg, [INIT_W[0], INIT_W[1], INIT_W[2], INIT_W[3]], |t, s| {
-                fc_val(t, s, default_decay)
-            });
-            let mut init = INIT_W;
-            init[0..4].copy_from_slice(&s0);
-            if cfg.only_s0 {
-                init.to_vec()
-            } else {
-                let weights = recency_weights(train.len(), cfg.use_recency_weighting);
-                let model = Model::build(ds, train, &weights, Some(cfg.max_seq_len), init, cfg);
-                train::train_with_init(&model, &tc, init.to_vec())
-            }
-        };
+        let w = train_weights(ds, train, cfg, &tc, default_decay);
         let test = &rows[test_start..test_end];
         let tm = Model::build(ds, test, &vec![1.0; test.len()], None, INIT_W, cfg);
         let all: Vec<usize> = (0..tm.rows.len()).collect();
@@ -249,6 +259,49 @@ pub fn process(ds: &Dataset, cfg: &Config) -> ModelOutput {
         p,
         params: Params::Partitioned(vec![("0".to_string(), last_w)]),
     }
+}
+
+/// `--partitions deck|preset`: train separate weights per partition (deck/preset id), then
+/// predict each partition's test rows with its own weights (INIT_W if a partition has no
+/// train data). The eval row-set is identical to the non-partitioned run, so `size` matches.
+fn process_partitioned(ds: &Dataset, cfg: &Config, tc: &TrainConfig, default_decay: f64) -> ModelOutput {
+    use std::collections::HashMap;
+    let rows = &ds.rows;
+    let splits = time_series_split(rows.len(), cfg.n_splits);
+    let mut eval_rows = Vec::new();
+    let mut p = Vec::new();
+    let mut last_pw: Vec<(String, Vec<f64>)> = Vec::new();
+
+    for s in splits {
+        let train = &rows[..s.test_start];
+        let test = &rows[s.test_start..s.test_end];
+
+        let mut parts: Vec<i64> = train.iter().map(|r| r.partition).collect();
+        parts.sort_unstable();
+        parts.dedup();
+        let mut pw: HashMap<i64, Vec<f64>> = HashMap::new();
+        for &pt in &parts {
+            let train_p: Vec<Row> = train.iter().filter(|r| r.partition == pt).cloned().collect();
+            pw.insert(pt, train_weights(ds, &train_p, cfg, tc, default_decay));
+        }
+
+        let mut tparts: Vec<i64> = test.iter().map(|r| r.partition).collect();
+        tparts.sort_unstable();
+        tparts.dedup();
+        for &pt in &tparts {
+            let test_p: Vec<Row> = test.iter().filter(|r| r.partition == pt).cloned().collect();
+            let w = pw.get(&pt).cloned().unwrap_or_else(|| INIT_W.to_vec());
+            let tm = Model::build(ds, &test_p, &vec![1.0; test_p.len()], None, INIT_W, cfg);
+            let all: Vec<usize> = (0..tm.rows.len()).collect();
+            for (i, pr) in tm.predict(&w, &all).into_iter().enumerate() {
+                eval_rows.push(tm.rows[i].clone());
+                p.push(pr);
+            }
+        }
+        last_pw = parts.iter().map(|&pt| (pt.to_string(), pw[&pt].clone())).collect();
+    }
+
+    ModelOutput { eval_rows, p, params: Params::Partitioned(last_pw) }
 }
 
 #[cfg(test)]

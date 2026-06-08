@@ -12,7 +12,7 @@ use serde::Serialize;
 use serde_json::Value;
 
 use crate::config::Config;
-use crate::data::read_user_revlogs;
+use crate::data::{read_user_partition_map, read_user_revlogs};
 use crate::eval::{evaluate, Params};
 use crate::features::create_features;
 use crate::models;
@@ -22,9 +22,16 @@ fn process_user(cfg: &Config, user_id: i64) -> Result<Value, String> {
     let t0 = Instant::now();
 
     let raw = read_user_revlogs(&cfg.data_path, user_id)?;
-    let ds = create_features(&raw, cfg)?;
+    let mut ds = create_features(&raw, cfg)?;
     if ds.len() < 6 {
         return Err(format!("{user_id} does not have enough data."));
+    }
+    // `--partitions deck|preset`: tag each row with its card's deck/preset partition.
+    if cfg.partitions != "none" {
+        let map = read_user_partition_map(&cfg.data_path, user_id, &cfg.partitions)?;
+        for r in &mut ds.rows {
+            r.partition = *map.get(&r.card_id).unwrap_or(&0);
+        }
     }
 
     let out = match cfg.model_name.as_str() {

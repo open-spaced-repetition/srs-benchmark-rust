@@ -58,6 +58,61 @@ pub fn read_user_revlogs(data_path: &Path, user_id: i64) -> Result<RawRevlogs, S
     Ok(out)
 }
 
+/// Read two Int64 columns from all parquet files under `<data_path>/<kind>/user_id=<id>/`,
+/// returning them as `(col_a, col_b)` row-aligned vectors.
+fn read_two_cols(
+    data_path: &Path,
+    kind: &str,
+    user_id: i64,
+    a: &str,
+    b: &str,
+) -> Result<(Vec<i64>, Vec<i64>), String> {
+    let dir = data_path.join(kind).join(format!("user_id={}", user_id));
+    if !dir.is_dir() {
+        return Err(format!("{kind} partition not found: {}", dir.display()));
+    }
+    let mut files: Vec<_> = std::fs::read_dir(&dir)
+        .map_err(|e| format!("read_dir {}: {e}", dir.display()))?
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .filter(|p| p.extension().map(|x| x == "parquet").unwrap_or(false))
+        .collect();
+    files.sort();
+    let (mut va, mut vb) = (Vec::new(), Vec::new());
+    for f in files {
+        let file = std::fs::File::open(&f).map_err(|e| format!("open {}: {e}", f.display()))?;
+        let reader = ParquetRecordBatchReaderBuilder::try_new(file)
+            .and_then(|b| b.build())
+            .map_err(|e| format!("parquet {}: {e}", f.display()))?;
+        for batch in reader {
+            let batch = batch.map_err(|e| e.to_string())?;
+            push_col(&batch, a, &mut va)?;
+            push_col(&batch, b, &mut vb)?;
+        }
+    }
+    Ok((va, vb))
+}
+
+/// Map each `card_id` to its training partition for `--partitions deck|preset`
+/// (mirrors `data_loader.py`: join cards→decks, partition = deck_id or preset_id).
+pub fn read_user_partition_map(
+    data_path: &Path,
+    user_id: i64,
+    kind: &str,
+) -> Result<std::collections::HashMap<i64, i64>, String> {
+    let (card_ids, deck_ids) = read_two_cols(data_path, "cards", user_id, "card_id", "deck_id")?;
+    if kind == "deck" {
+        return Ok(card_ids.into_iter().zip(deck_ids).collect());
+    }
+    // preset: card → deck → preset_id
+    let (d_ids, preset_ids) = read_two_cols(data_path, "decks", user_id, "deck_id", "preset_id")?;
+    let deck2preset: std::collections::HashMap<i64, i64> = d_ids.into_iter().zip(preset_ids).collect();
+    let mut map = std::collections::HashMap::new();
+    for (cid, did) in card_ids.into_iter().zip(deck_ids) {
+        map.insert(cid, *deck2preset.get(&did).unwrap_or(&did));
+    }
+    Ok(map)
+}
+
 fn read_one_parquet(path: &Path, out: &mut RawRevlogs) -> Result<(), String> {
     let file = std::fs::File::open(path).map_err(|e| format!("open {}: {e}", path.display()))?;
     let builder = ParquetRecordBatchReaderBuilder::try_new(file)
