@@ -14,6 +14,7 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::config::Config;
+use crate::split::time_series_split;
 
 /// Per-card review sequence (post-preprocessing: after rating filter + `i>128` drop, before
 /// the postprocessing short/`delta_t>0` filters). Indexed by `Row::pos`.
@@ -51,11 +52,23 @@ pub struct Row {
     pub partition: i64,
 }
 
+/// One `--equalize_test_with_non_secs` split: train on the secs prefix `rows[0..train_end]`,
+/// test on the secs rows at `test_idx`. See [`build_equalize_splits`].
+#[derive(Debug, Clone)]
+pub struct EqSplit {
+    pub train_end: usize,
+    pub test_idx: Vec<usize>,
+}
+
 /// Feature-engineered dataset for one user.
 #[derive(Debug, Clone)]
 pub struct Dataset {
     pub rows: Vec<Row>,
     pub cards: Vec<Card>,
+    /// Set only under `--secs --equalize_test_with_non_secs`: per-split train/test sets
+    /// defined by the NON-secs pipeline (so trainable models test on the same reviews a
+    /// non-`--secs` run would). `None` ⇒ models use the standard `TimeSeriesSplit`.
+    pub equalize_splits: Option<Vec<EqSplit>>,
 }
 
 impl Dataset {
@@ -251,7 +264,56 @@ pub fn create_features(raw: &crate::data::RawRevlogs, cfg: &Config) -> Result<Da
     if rows.is_empty() {
         return Err("no data after feature engineering".into());
     }
-    Ok(Dataset { rows, cards })
+    Ok(Dataset {
+        rows,
+        cards,
+        equalize_splits: None,
+    })
+}
+
+/// Build the `--equalize_test_with_non_secs` per-split train/test sets (port of
+/// `_create_features_with_equalized_test` + script.py's split loop).
+///
+/// The split is governed by a `TimeSeriesSplit` over the **non-secs** surviving rows (which
+/// include the outlier / non-continuous-row removal). For fold `i`:
+/// - **test** = the secs rows whose `review_th` is in the non-secs fold (non-secs survivors
+///   are a subset of secs survivors, so each maps 1:1 to a secs row);
+/// - **train** = the secs rows preceding the fold's earliest `review_th` — a prefix, since
+///   rows are `review_th`-sorted, matching `df_secs[df_secs.review_th < min]`.
+///
+/// `secs_ds` provides the feature values (identical to a plain `--secs` run); only the row
+/// partitioning differs. Returns `Err` (⇒ user skipped, as sklearn would raise) if the
+/// non-secs frame has fewer than `n_splits + 1` rows.
+pub fn build_equalize_splits(
+    raw: &crate::data::RawRevlogs,
+    cfg: &Config,
+    secs_ds: &Dataset,
+) -> Result<Vec<EqSplit>, String> {
+    let mut ns_cfg = cfg.clone();
+    ns_cfg.use_secs_intervals = false;
+    let ns = create_features(raw, &ns_cfg)?;
+    let n_ns = ns.rows.len();
+    if n_ns < cfg.n_splits + 1 {
+        return Err(format!("only {n_ns} non-secs rows (< n_splits+1)"));
+    }
+    // secs rows are review_th-sorted: membership for the test set, prefix count for train.
+    let secs_th: Vec<i64> = secs_ds.rows.iter().map(|r| r.review_th).collect();
+    let folds = time_series_split(n_ns, cfg.n_splits);
+    let mut out = Vec::with_capacity(folds.len());
+    for f in folds {
+        // non-secs fold rows are contiguous & sorted ⇒ min review_th is the first one.
+        let min_th = ns.rows[f.test_start].review_th;
+        let train_end = secs_th.partition_point(|&th| th < min_th);
+        let fold_set: HashSet<i64> = ns.rows[f.test_start..f.test_end]
+            .iter()
+            .map(|r| r.review_th)
+            .collect();
+        let test_idx: Vec<usize> = (0..secs_th.len())
+            .filter(|&i| fold_set.contains(&secs_th[i]))
+            .collect();
+        out.push(EqSplit { train_end, test_idx });
+    }
+    Ok(out)
 }
 
 /// `remove_outliers` (per `first_rating`): return the set of `delta_t` (=elapsed_days) cells

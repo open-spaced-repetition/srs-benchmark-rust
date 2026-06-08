@@ -264,29 +264,47 @@ pub fn process(ds: &Dataset, cfg: &Config) -> ModelOutput {
     let rows = &ds.rows;
     let feats = compute_features(ds);
     let y: Vec<f64> = rows.iter().map(|r| r.y as f64).collect();
-    let splits = time_series_split(rows.len(), cfg.n_splits);
     let mut eval_rows = Vec::new();
     let mut p = Vec::new();
     let mut last_coef = MEAN;
 
-    for s in splits {
-        let train_feats = &feats[..s.test_start];
-        let train_y = &y[..s.test_start];
-        let coef = if cfg.default_params {
-            MEAN
-        } else {
-            train(train_feats, train_y)
-        };
-        for i in s.test_start..s.test_end {
-            let x = &feats[i];
-            let mut logit = 0.0;
-            for k in 0..NF {
-                logit += x[k] * coef[k];
-            }
-            eval_rows.push(rows[i].clone());
-            p.push(1.0 / (1.0 + (-logit).exp()));
+    // Predict `feats[i]·coef` through the sigmoid, recording the row + probability.
+    let mut predict = |i: usize, coef: &[f64; NF], eval_rows: &mut Vec<_>, p: &mut Vec<f64>| {
+        let x = &feats[i];
+        let mut logit = 0.0;
+        for k in 0..NF {
+            logit += x[k] * coef[k];
         }
-        last_coef = coef;
+        eval_rows.push(rows[i].clone());
+        p.push(1.0 / (1.0 + (-logit).exp()));
+    };
+
+    if let Some(splits) = &ds.equalize_splits {
+        // `--equalize_test_with_non_secs`: train on the non-secs-defined prefix, test on the
+        // non-secs-defined fold rows (feature values are still the standard `--secs` ones).
+        for sp in splits {
+            let coef = if cfg.default_params {
+                MEAN
+            } else {
+                train(&feats[..sp.train_end], &y[..sp.train_end])
+            };
+            for &i in &sp.test_idx {
+                predict(i, &coef, &mut eval_rows, &mut p);
+            }
+            last_coef = coef;
+        }
+    } else {
+        for s in time_series_split(rows.len(), cfg.n_splits) {
+            let coef = if cfg.default_params {
+                MEAN
+            } else {
+                train(&feats[..s.test_start], &y[..s.test_start])
+            };
+            for i in s.test_start..s.test_end {
+                predict(i, &coef, &mut eval_rows, &mut p);
+            }
+            last_coef = coef;
+        }
     }
 
     ModelOutput {

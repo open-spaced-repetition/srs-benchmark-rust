@@ -207,14 +207,26 @@ oracle). The data pipeline + non-trained models are already fast.
 `process_partitioned` branch + `data::read_user_partition_map` cards→decks join), and
 LogisticRegression (`models/logistic_regression.rs`: 34-feature linear model, AdamW, analytic
 gradient; feature_rating/first_rating use the FULL pre-filter card sequence while feat_elapsed
-uses the surviving prior — that was the bug, +0.024 → +0.000001). **62 configs verified.**
+uses the surviving prior — that was the bug, +0.024 → +0.000001). **63 configs verified.**
 **Determinism + BCE-clamp bugs fixed** (see notes above).
 
-**REMAINING:** LogisticRegression `-equalize` variant (needs the `--equalize_test_with_non_secs`
-feature path), FSRS-rs (import crate; `-short` non-secs), FSRS-6-one-step (online per-review
+**`--equalize_test_with_non_secs` PORTED + VERIFIED (2026-06-08):** `features::build_equalize_splits`
++ `Dataset::equalize_splits: Option<Vec<EqSplit>>`. Under `--secs --equalize_test_with_non_secs`
+the train/test split is governed by a `TimeSeriesSplit` over the **non-secs** survivors (run a
+second `create_features` with `use_secs=false`): per fold, test = the secs rows whose `review_th`
+is in the non-secs fold (non-secs survivors ⊆ secs survivors, 1:1), train = the secs prefix with
+`review_th < fold.min`. **Feature values stay the plain `--secs` ones** — for LogReg the equalize
+flag only swaps t_history's source `delta_t_secs`→`delta_t`, but the LogReg engineer already sets
+`delta_t = delta_t_secs`, and the 34 features don't read t_history, so they're identical to a plain
+`--secs` run. Built in `run.rs::process_user`, consumed by `logistic_regression::process` (and is
+reusable for the deferred FSRS-7/neural equalize variants). Verified `LogisticRegression --short
+--secs --recency --equalize_test_with_non_secs`: size exact (per-user + sum 32 668 830 — equals the
+non-secs `-short` size, as expected since the test set is the non-secs survivors), LogLoss +0.000015.
+
+**REMAINING:** FSRS-rs (import crate; `-short` non-secs), FSRS-6-one-step (online per-review
 SGD; `-short`), 90%/ConstantModel (no upstream ref → can't verify); `--raw`/`--file`/`--weights`
 output; ICI(lowess)/smECE(relplot) metrics; Python path for GRU/LSTM/RWKV/Transformer/NN-17;
-the perf pass. FSRS-7 deferred (10 configs). The 3 remaining verifiable configs each need
+the perf pass. FSRS-7 deferred (10 configs). The 2 remaining verifiable configs each need
 disproportionate new infra; the other 24 are deferred (FSRS-7) or Python-path (neural).
 
 ## 7. Conventions

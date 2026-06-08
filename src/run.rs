@@ -26,6 +26,11 @@ fn process_user(cfg: &Config, user_id: i64) -> Result<Value, String> {
     if ds.len() < 6 {
         return Err(format!("{user_id} does not have enough data."));
     }
+    // `--secs --equalize_test_with_non_secs`: the train/test split is defined by the non-secs
+    // pipeline (test only on reviews a non-`--secs` run would test). Features stay the secs ones.
+    if cfg.use_secs_intervals && cfg.equalize_test_with_non_secs {
+        ds.equalize_splits = Some(crate::features::build_equalize_splits(&raw, cfg, &ds)?);
+    }
     // `--partitions deck|preset`: tag each row with its card's deck/preset partition.
     if cfg.partitions != "none" {
         let map = read_user_partition_map(&cfg.data_path, user_id, &cfg.partitions)?;
