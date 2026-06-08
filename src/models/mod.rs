@@ -5,6 +5,7 @@
 //! `p`, and any trained parameters to record.
 
 pub mod act_r;
+pub mod anki;
 pub mod avg;
 pub mod dash;
 pub mod dash_act_r;

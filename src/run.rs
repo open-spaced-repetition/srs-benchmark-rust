@@ -36,6 +36,7 @@ fn process_user(cfg: &Config, user_id: i64) -> Result<Value, String> {
         "DASH" | "DASH[MCM]" => models::dash::process(&ds, cfg),
         "DASH[ACT-R]" => models::dash_act_r::process(&ds, cfg),
         "ACT-R" => models::act_r::process(&ds, cfg),
+        "Anki" => models::anki::process(&ds, cfg),
         "Ebisu-v2" => models::ebisu::process(&ds, cfg),
         "RMSE-BINS-EXPLOIT" => models::rmse_bins_exploit::process(&ds, cfg),
         "FSRSv1" => models::fsrs_v1::process(&ds, cfg),

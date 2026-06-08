@@ -46,7 +46,7 @@ criteria:
   more than **0.0005**, but may be **better** (lower) by any amount. `(better)` marks configs
   where the Rust port scores a lower loss than upstream.
 
-### Verified — 55 configurations
+### Verified — 58 configurations
 
 | Configuration | `size` | mean LogLoss vs upstream | Status |
 | --- | :---: | --- | --- |
@@ -64,6 +64,9 @@ criteria:
 | `RMSE-BINS-EXPLOIT --short --secs` | ✅ | -0.019035 (better) ⁴ | ✅ verified |
 | `Ebisu-v2` | ✅ | +0.000000 | ✅ verified |
 | `Ebisu-v2 --short --secs` | ✅ | +0.000000 | ✅ verified |
+| `Anki` | ✅ | +0.000027 | ✅ verified |
+| `Anki --default` | ✅ | +0.000000 | ✅ verified |
+| `Anki --short --secs` | ✅ | -0.000142 | ✅ verified |
 | `DASH` | ✅ | +0.000000 | ✅ verified |
 | `DASH --secs` | ✅ | +0.000000 ⁴ | ✅ verified |
 | `DASH --short` | ✅ | +0.000155 | ✅ verified |
@@ -106,12 +109,12 @@ criteria:
 | `FSRS-6 --short --secs --recency` | ✅ | +0.000127 | ✅ verified |
 | `FSRS-6 --short --recency --train_equals_test` | ✅ | +0.000430 | ✅ verified |
 
-### Not yet reproduced — 34 configurations
+### Not yet reproduced — 31 configurations
 
 | Configuration(s) | Status |
 | --- | --- |
 | `FSRS-6 --partitions deck` / `--partitions preset` (3) | 📋 planned — needs deck/preset partitioning |
-| Anki (3), LogisticRegression (2), FSRS-6-one-step (1), FSRS-rs (1) | 📋 planned — model ports (FSRS-rs imports the `fsrs` crate) |
+| LogisticRegression (2), FSRS-6-one-step (1), FSRS-rs (1) | 📋 planned — model ports (FSRS-rs imports the `fsrs` crate) |
 | FSRS-7 (10 flag variants) | ⏸ deferred — upstream model still WIP |
 | GRU, LSTM, RWKV, RWKV-P, NN-17, Transformer (14) | 🐍 Python path — Reptile/neural, kept in Python |
 
