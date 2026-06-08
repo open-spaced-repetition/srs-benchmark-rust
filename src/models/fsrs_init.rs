@@ -13,7 +13,7 @@ use crate::config::Config;
 use crate::features::{Dataset, Row};
 
 /// Golden-section minimization of a unimodal `f` on `[lo, hi]`.
-fn minimize_1d<F: Fn(f64) -> f64>(f: F, lo: f64, hi: f64) -> f64 {
+fn golden<F: Fn(f64) -> f64>(f: &F, lo: f64, hi: f64) -> f64 {
     let gr = (5f64.sqrt() - 1.0) / 2.0; // 0.6180339887...
     let mut a = lo;
     let mut b = hi;
@@ -42,6 +42,61 @@ fn minimize_1d<F: Fn(f64) -> f64>(f: F, lo: f64, hi: f64) -> f64 {
     (a + b) / 2.0
 }
 
+/// Global golden-section min over `[lo, hi]` (assumes ~unimodality). Used by the Adam-trained
+/// FSRS models, which re-optimize S0 afterwards, so the best obtainable S0 is fine.
+fn minimize_1d<F: Fn(f64) -> f64>(f: F, lo: f64, hi: f64) -> f64 {
+    golden(&f, lo, hi)
+}
+
+/// Local minimization from `x0` to the local minimum in its basin (mimics `scipy.minimize` /
+/// L-BFGS-B started at `x0`). FSRS-6-one-step needs this: its tiny-lr single-pass SGD barely
+/// moves S0, so the init must land where scipy lands — which can be a boundary local min, not
+/// the global min the golden-section would pick. March downhill from `x0` (growing steps) to
+/// bracket the basin's min, then golden-section the bracket; a descent into a bound returns it.
+fn minimize_1d_local<F: Fn(f64) -> f64>(f: F, lo: f64, hi: f64, x0: f64) -> f64 {
+    let x0 = x0.clamp(lo, hi);
+    let f0 = f(x0);
+    let span = hi - lo;
+    let eps = (span * 1e-6).max(1e-12);
+    let fr = if x0 + eps <= hi { f(x0 + eps) } else { f0 };
+    let fl = if x0 - eps >= lo { f(x0 - eps) } else { f0 };
+    // Downhill direction; if neither side decreases, x0 is already a local min.
+    let dir = if fr < f0 && fr <= fl {
+        1.0
+    } else if fl < f0 {
+        -1.0
+    } else {
+        return x0;
+    };
+
+    let mut step = span * 1e-3;
+    let (mut a, mut fa) = (x0, f0);
+    let (mut b, mut fb) = ((x0 + dir * step).clamp(lo, hi), 0.0);
+    fb = f(b);
+    loop {
+        if b <= lo || b >= hi {
+            // Descended into a bound: it's the basin min if still decreasing, else bracket [a,b].
+            if fb <= fa {
+                return b;
+            }
+            break;
+        }
+        let c = (b + dir * step).clamp(lo, hi);
+        let fc = f(c);
+        if fc >= fb {
+            let (g_lo, g_hi) = if a < c { (a, c) } else { (c, a) };
+            return golden(&f, g_lo, g_hi);
+        }
+        a = b;
+        fa = fb;
+        b = c;
+        fb = fc;
+        step *= 1.6;
+    }
+    let (g_lo, g_hi) = if a < b { (a, b) } else { (b, a) };
+    golden(&f, g_lo, g_hi)
+}
+
 /// Fit `w[0..4]` (initial stabilities for ratings 1–4). `fc(delta_t, stability)` is the
 /// version's forgetting curve (value form). `default_s0` are the model's `init_w[0..4]`.
 pub fn fit_s0<FC: Fn(f64, f64) -> f64>(
@@ -50,6 +105,29 @@ pub fn fit_s0<FC: Fn(f64, f64) -> f64>(
     cfg: &Config,
     default_s0: [f64; 4],
     fc: FC,
+) -> [f64; 4] {
+    fit_s0_impl(ds, train, cfg, default_s0, fc, false)
+}
+
+/// As [`fit_s0`] but minimizing locally from `x0 = init_s0` (mimics `scipy.minimize`). Use
+/// this for FSRS-6-one-step, whose SGD doesn't re-optimize S0 (see [`minimize_1d_local`]).
+pub fn fit_s0_from_x0<FC: Fn(f64, f64) -> f64>(
+    ds: &Dataset,
+    train: &[Row],
+    cfg: &Config,
+    default_s0: [f64; 4],
+    fc: FC,
+) -> [f64; 4] {
+    fit_s0_impl(ds, train, cfg, default_s0, fc, true)
+}
+
+fn fit_s0_impl<FC: Fn(f64, f64) -> f64>(
+    ds: &Dataset,
+    train: &[Row],
+    cfg: &Config,
+    default_s0: [f64; 4],
+    fc: FC,
+    from_x0: bool,
 ) -> [f64; 4] {
     let _ = ds;
     let s_min = cfg.s_min;
@@ -109,7 +187,11 @@ pub fn fit_s0<FC: Fn(f64, f64) -> f64>(
                 ll + (s - init_s0).abs() / 16.0
             }
         };
-        rs[fr as usize] = Some(minimize_1d(loss, s_min, s_max));
+        rs[fr as usize] = Some(if from_x0 {
+            minimize_1d_local(loss, s_min, s_max, init_s0)
+        } else {
+            minimize_1d(loss, s_min, s_max)
+        });
         rc[fr as usize] = gs.iter().map(|g| g.2).sum();
     }
 

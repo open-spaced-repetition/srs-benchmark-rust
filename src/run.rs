@@ -59,6 +59,7 @@ fn process_user(cfg: &Config, user_id: i64) -> Result<Value, String> {
         "FSRS-4.5" => models::fsrs_v4dot5::process(&ds, cfg),
         "FSRS-5" => models::fsrs_v5::process(&ds, cfg),
         "FSRS-6" => models::fsrs_v6::process(&ds, cfg),
+        "FSRS-6-one-step" => models::fsrs_v6_one_step::process(&ds, cfg),
         other => return Err(format!("model '{other}' not yet ported")),
     };
 

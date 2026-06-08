@@ -18,6 +18,7 @@ pub mod fsrs_v4;
 pub mod fsrs_v4dot5;
 pub mod fsrs_v5;
 pub mod fsrs_v6;
+pub mod fsrs_v6_one_step;
 pub mod hlr;
 pub mod logistic_regression;
 pub mod moving_avg;

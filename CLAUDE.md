@@ -207,8 +207,24 @@ oracle). The data pipeline + non-trained models are already fast.
 `process_partitioned` branch + `data::read_user_partition_map` cards→decks join), and
 LogisticRegression (`models/logistic_regression.rs`: 34-feature linear model, AdamW, analytic
 gradient; feature_rating/first_rating use the FULL pre-filter card sequence while feat_elapsed
-uses the surviving prior — that was the bug, +0.024 → +0.000001). **63 configs verified.**
+uses the surviving prior — that was the bug, +0.024 → +0.000001). **64 configs verified.**
 **Determinism + BCE-clamp bugs fixed** (see notes above).
+
+**FSRS-6-one-step PORTED + VERIFIED (2026-06-08):** `models/fsrs_v6_one_step.rs`. Online
+FSRS-6: standard S0 init, then ONE pass over training reviews (review_th order), one SGD step
+(lr=1e-4) per review on a hand-derived gradient that backprops through only the most-recent
+transition. Predicts with stock FSRS-6 (`fsrs_v6::predict`) → eval row-set = FSRS-6-short, so
+`size` is exact by construction; only `p` differs. The training-forward `step` is the model's
+own simplified recurrence (S_MIN=0.001 floor, no s_max cap, `rating>=3` short-term branch, no
+failure floor, w[17..19] left unclamped) — ported byte-for-byte since it drives the SGD path.
+**Key fix:** the tiny-lr single pass barely moves S0, so the init must match scipy's *local*
+descent from `x0=init_s0`, NOT the golden-section's global min. Added `fit_s0_from_x0`
+(+`minimize_1d_local`: march downhill from x0 to bracket the basin, golden-section it, a
+descent into a bound returns it) used ONLY by one-step; other fit_s0 models keep the global
+golden-section (Adam re-optimizes S0 there, so it's unaffected — FSRS-6-short still −0.000008).
+Global golden-section gave +0.000493 (a few users blew up: S0=1.3 where scipy floored to
+0.001); local fit → **−0.000681** (better, comfortable margin). `FSRS-6-one-step --short`:
+size exact, LogLoss −0.000681.
 
 **`--equalize_test_with_non_secs` PORTED + VERIFIED (2026-06-08):** `features::build_equalize_splits`
 + `Dataset::equalize_splits: Option<Vec<EqSplit>>`. Under `--secs --equalize_test_with_non_secs`
@@ -223,11 +239,11 @@ reusable for the deferred FSRS-7/neural equalize variants). Verified `LogisticRe
 --secs --recency --equalize_test_with_non_secs`: size exact (per-user + sum 32 668 830 — equals the
 non-secs `-short` size, as expected since the test set is the non-secs survivors), LogLoss +0.000015.
 
-**REMAINING:** FSRS-rs (import crate; `-short` non-secs), FSRS-6-one-step (online per-review
-SGD; `-short`), 90%/ConstantModel (no upstream ref → can't verify); `--raw`/`--file`/`--weights`
-output; ICI(lowess)/smECE(relplot) metrics; Python path for GRU/LSTM/RWKV/Transformer/NN-17;
-the perf pass. FSRS-7 deferred (10 configs). The 2 remaining verifiable configs each need
-disproportionate new infra; the other 24 are deferred (FSRS-7) or Python-path (neural).
+**REMAINING:** FSRS-rs (import crate; `-short` non-secs), 90%/ConstantModel (no upstream ref →
+can't verify); `--raw`/`--file`/`--weights` output; ICI(lowess)/smECE(relplot) metrics; Python
+path for GRU/LSTM/RWKV/Transformer/NN-17; the perf pass. FSRS-7 deferred (10 configs). The 1
+remaining verifiable config (FSRS-rs) needs a heavy external crate; the other 24 are deferred
+(FSRS-7) or Python-path (neural).
 
 ## 7. Conventions
 

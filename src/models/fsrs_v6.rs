@@ -13,7 +13,9 @@ use crate::train::{self, BatchModel, TrainConfig};
 
 const NP: usize = 21;
 const GAMMA: f64 = 1.0;
-const INIT_W: [f64; NP] = [
+/// FSRS-6 default parameters (`fsrs_optimizer.DEFAULT_PARAMETER`). Public so FSRS-6-one-step
+/// can reuse them as its `init_w`.
+pub const INIT_W: [f64; NP] = [
     0.212, 1.2931, 2.3065, 8.2956, 6.4133, 0.8334, 3.0194, 0.001, 1.8722, 0.1666, 0.796, 1.4835,
     0.0614, 0.2629, 1.6483, 0.6014, 1.8729, 0.5425, 0.0912, 0.0658, 0.1542,
 ];
@@ -217,6 +219,14 @@ fn train_weights(ds: &Dataset, train: &[Row], cfg: &Config, tc: &TrainConfig, de
         let model = Model::build(ds, train, &weights, Some(cfg.max_seq_len), init, cfg);
         train::train_with_init(&model, tc, init.to_vec())
     }
+}
+
+/// Predict retrievability for `test` rows under explicit FSRS-6 weights `w`, in `test` order.
+/// Used by FSRS-6-one-step (which trains `w` by online SGD but predicts with stock FSRS-6).
+pub fn predict(ds: &Dataset, test: &[Row], w: &[f64], cfg: &Config) -> Vec<f64> {
+    let tm = Model::build(ds, test, &vec![1.0; test.len()], None, INIT_W, cfg);
+    let all: Vec<usize> = (0..tm.rows.len()).collect();
+    tm.predict(w, &all)
 }
 
 pub fn process(ds: &Dataset, cfg: &Config) -> ModelOutput {
