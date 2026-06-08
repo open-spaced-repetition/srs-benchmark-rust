@@ -239,11 +239,25 @@ reusable for the deferred FSRS-7/neural equalize variants). Verified `LogisticRe
 --secs --recency --equalize_test_with_non_secs`: size exact (per-user + sum 32 668 830 — equals the
 non-secs `-short` size, as expected since the test set is the non-secs survivors), LogLoss +0.000015.
 
-**REMAINING:** FSRS-rs (import crate; `-short` non-secs), 90%/ConstantModel (no upstream ref →
-can't verify); `--raw`/`--file`/`--weights` output; ICI(lowess)/smECE(relplot) metrics; Python
-path for GRU/LSTM/RWKV/Transformer/NN-17; the perf pass. FSRS-7 deferred (10 configs). The 1
-remaining verifiable config (FSRS-rs) needs a heavy external crate; the other 24 are deferred
-(FSRS-7) or Python-path (neural).
+**FSRS-rs IMPLEMENTED (2026-06-08, full 1000-user verify pending):** `models/fsrs_rs.rs`, gated
+behind the optional `fsrs-rs` cargo feature (`cargo build --release --features fsrs-rs`). Imports
+the real `fsrs` crate and calls `FSRS::new(Some(&[])).benchmark(ComputeParametersInput{train_set,
+progress:None, enable_short_term:true, num_relearning_steps:None})` — the exact call
+`fsrs-rs-python` makes — then rounds weights to 4 dp; predicts with stock FSRS-6 (`fsrs_v6::predict`,
+matching the Python's `fsrs_optimizer.Collection`), so the eval set = FSRS-6-short and `size` is
+exact. Items = one per training review (priors + current as `(delta_t=max(0,int), rating)`), in
+review_th order, built from `prior_dt_active`/`prior_ratings` (port of `convert_to_items`).
+**⚠ Version gotcha:** the published PyPI wheel `fsrs-rs-python` 0.8.2 does NOT match the v0.8.2
+*git tag* (which pins fsrs git rev `932bb7af` = FSRS-5, 19 params). The installed wheel returns
+21 params (FSRS-6); a panic-path probe revealed it links **crates.io `fsrs 4.1.1`** (which exports
+19-param `DEFAULT_PARAMETERS` but trains a 21-param model). So Cargo.toml pins `fsrs = "=4.1.1"`
+(crates.io, NOT a git rev). Weights aren't bit-exact (burn f32 training has parallel-reduction
+nondeterminism) but match closely; 20-user spot check −0.000378 (size exact). Full 1000-user run
+is slow (~2h: fsrs/burn training per split per user) — verify before marking done.
+
+**REMAINING:** FSRS-rs full 1000-user verify (run in progress); 90%/ConstantModel (no upstream
+ref → can't verify); `--raw`/`--file`/`--weights` output; ICI(lowess)/smECE(relplot) metrics;
+Python path for GRU/LSTM/RWKV/Transformer/NN-17; the perf pass. FSRS-7 deferred (10 configs).
 
 ## 7. Conventions
 

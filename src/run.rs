@@ -60,6 +60,12 @@ fn process_user(cfg: &Config, user_id: i64) -> Result<Value, String> {
         "FSRS-5" => models::fsrs_v5::process(&ds, cfg),
         "FSRS-6" => models::fsrs_v6::process(&ds, cfg),
         "FSRS-6-one-step" => models::fsrs_v6_one_step::process(&ds, cfg),
+        #[cfg(feature = "fsrs-rs")]
+        "FSRS-rs" => models::fsrs_rs::process(&ds, cfg),
+        #[cfg(not(feature = "fsrs-rs"))]
+        "FSRS-rs" => {
+            return Err("FSRS-rs requires building with `--features fsrs-rs`".into())
+        }
         other => return Err(format!("model '{other}' not yet ported")),
     };
 

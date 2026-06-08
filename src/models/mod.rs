@@ -11,6 +11,8 @@ pub mod dash;
 pub mod dash_act_r;
 pub mod ebisu;
 pub mod fsrs_init;
+#[cfg(feature = "fsrs-rs")]
+pub mod fsrs_rs;
 pub mod fsrs_v1;
 pub mod fsrs_v2;
 pub mod fsrs_v3;

@@ -15,6 +15,15 @@ runtime path for now.
 cargo build --release          # binary: target/release/script
 ```
 
+The **FSRS-rs** algorithm is gated behind an optional `fsrs-rs` cargo feature, because it
+imports the real [`fsrs`](https://crates.io/crates/fsrs) crate (the exact `4.1.1` release that
+`fsrs-rs-python` 0.8.2 wraps), which pulls in the heavy [`burn`](https://burn.dev) ML
+framework. It is off by default; enable it with:
+
+```bash
+cargo build --release --features fsrs-rs
+```
+
 ## Run
 
 ```bash
@@ -119,7 +128,7 @@ criteria:
 
 | Configuration(s) | Status |
 | --- | --- |
-| FSRS-rs (1) | 📋 planned — imports the `fsrs` crate |
+| FSRS-rs `--short` (1) | 🔬 implemented (imports `fsrs` 4.1.1, `--features fsrs-rs`); 20-user spot check passes (−0.000378), full 1000-user verification in progress |
 | FSRS-7 (10 flag variants) | ⏸ deferred — upstream model still WIP |
 | GRU, LSTM, RWKV, RWKV-P, NN-17, Transformer (14) | 🐍 Python path — Reptile/neural, kept in Python |
 

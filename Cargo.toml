@@ -13,6 +13,11 @@ path = "src/main.rs"
 # Round every model/optimizer arithmetic result to f32 precision (mimics torch's f32).
 # Default build is f64 (the rounding compiles to a no-op). Experiment-only.
 fp32 = []
+# Enable the FSRS-rs algorithm by importing the real `fsrs` crate (the exact crates.io version
+# that fsrs-rs-python 0.8.2 wraps — `fsrs 4.1.1` — so results match bit-for-bit). Heavy build —
+# pulls in the burn ML framework — so it is OFF by default.
+# Build with: cargo build --release --features fsrs-rs
+fsrs-rs = ["dep:fsrs"]
 
 [dependencies]
 clap = { version = "4", features = ["derive"] }
@@ -21,6 +26,9 @@ serde_json = { version = "1", features = ["preserve_order"] }
 rayon = "1"
 parquet = { version = "58.3.0", features = ["arrow"] }
 arrow = "58.3.0"
+# FSRS-rs backend (optional; see the `fsrs-rs` feature above). Pinned to the exact crates.io
+# release that fsrs-rs-python 0.8.2 wraps, so trained weights match the upstream reference.
+fsrs = { version = "=4.1.1", optional = true }
 
 [profile.release]
 opt-level = 3
