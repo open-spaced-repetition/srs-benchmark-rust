@@ -203,15 +203,19 @@ Correct but needs a **reverse-mode / batching perf pass** (forward-mode models a
 oracle). The data pipeline + non-trained models are already fast.
 
 **DONE since:** Anki (3 configs), `--recency`/`--two_buttons`(binary)/`--S0`/`--default`/
-`--train_equals_test` flag variants, and `--partitions deck/preset` (FSRS-6, isolated
-`process_partitioned` branch + `data::read_user_partition_map` cards→decks join). 61 configs
-verified. **Determinism + BCE-clamp bugs fixed** (see notes above).
+`--train_equals_test` flag variants, `--partitions deck/preset` (FSRS-6, isolated
+`process_partitioned` branch + `data::read_user_partition_map` cards→decks join), and
+LogisticRegression (`models/logistic_regression.rs`: 34-feature linear model, AdamW, analytic
+gradient; feature_rating/first_rating use the FULL pre-filter card sequence while feat_elapsed
+uses the surviving prior — that was the bug, +0.024 → +0.000001). **62 configs verified.**
+**Determinism + BCE-clamp bugs fixed** (see notes above).
 
-**REMAINING:** LogisticRegression (34 features + recency [+equalize]), FSRS-rs (import crate;
-`-short` non-secs), FSRS-6-one-step (online per-review SGD; `-short`), 90%/ConstantModel (no
-upstream ref → can't verify); `--equalize_test_with_non_secs`; `--raw`/`--file`/`--weights`
+**REMAINING:** LogisticRegression `-equalize` variant (needs the `--equalize_test_with_non_secs`
+feature path), FSRS-rs (import crate; `-short` non-secs), FSRS-6-one-step (online per-review
+SGD; `-short`), 90%/ConstantModel (no upstream ref → can't verify); `--raw`/`--file`/`--weights`
 output; ICI(lowess)/smECE(relplot) metrics; Python path for GRU/LSTM/RWKV/Transformer/NN-17;
-the perf pass. FSRS-7 deferred (10 configs).
+the perf pass. FSRS-7 deferred (10 configs). The 3 remaining verifiable configs each need
+disproportionate new infra; the other 24 are deferred (FSRS-7) or Python-path (neural).
 
 ## 7. Conventions
 
