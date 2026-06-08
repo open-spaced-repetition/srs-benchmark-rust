@@ -46,7 +46,7 @@ criteria:
   more than **0.0005**, but may be **better** (lower) by any amount. `(better)` marks configs
   where the Rust port scores a lower loss than upstream.
 
-### Verified — 61 configurations
+### Verified — 62 configurations
 
 | Configuration | `size` | mean LogLoss vs upstream | Status |
 | --- | :---: | --- | --- |
@@ -111,12 +111,13 @@ criteria:
 | `FSRS-6 --short --partitions deck` | ✅ | +0.000477 | ✅ verified |
 | `FSRS-6 --short --partitions preset` | ✅ | -0.000001 | ✅ verified |
 | `FSRS-6 --short --secs --partitions preset` | ✅ | -0.003894 (better) | ✅ verified |
+| `LogisticRegression --short --secs --recency` | ✅ | +0.000001 | ✅ verified |
 
-### Not yet reproduced — 28 configurations
+### Not yet reproduced — 27 configurations
 
 | Configuration(s) | Status |
 | --- | --- |
-| LogisticRegression (2), FSRS-6-one-step (1), FSRS-rs (1) | 📋 planned — model ports (FSRS-rs imports the `fsrs` crate) |
+| LogisticRegression `…equalize_test_with_non_secs` (1), FSRS-6-one-step (1), FSRS-rs (1) | 📋 planned — ports / `--equalize_test_with_non_secs` path; FSRS-rs imports the `fsrs` crate |
 | FSRS-7 (10 flag variants) | ⏸ deferred — upstream model still WIP |
 | GRU, LSTM, RWKV, RWKV-P, NN-17, Transformer (14) | 🐍 Python path — Reptile/neural, kept in Python |
 

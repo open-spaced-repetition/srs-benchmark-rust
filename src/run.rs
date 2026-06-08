@@ -40,6 +40,7 @@ fn process_user(cfg: &Config, user_id: i64) -> Result<Value, String> {
         "SM2-trainable" => models::sm2_trainable::process(&ds, cfg),
         "MOVING-AVG" => models::moving_avg::process(&ds, cfg),
         "HLR" => models::hlr::process(&ds, cfg),
+        "LogisticRegression" => models::logistic_regression::process(&ds, cfg),
         "DASH" | "DASH[MCM]" => models::dash::process(&ds, cfg),
         "DASH[ACT-R]" => models::dash_act_r::process(&ds, cfg),
         "ACT-R" => models::act_r::process(&ds, cfg),
