@@ -42,64 +42,93 @@ run).
 
 ## Reproduction status
 
-How faithfully each ported algorithm reproduces the upstream Python results, measured on
-the first **1000 users** of `anki-revlogs-10k` versus the upstream reference files. Two
+Every **(algorithm + flags)** configuration that upstream publishes a reference for is listed
+below — one row per config — measured on the first **1000 users** of `anki-revlogs-10k`. Two
 criteria:
 
 - **`size` exact** — the per-user review count *and* its total across users must match the
   Python output **exactly** (validates the feature pipeline / row filtering).
-- **mean LogLoss — one-sided tolerance**: it must not be **worse** (higher) than upstream by
-  more than **0.0005**, but may be **better** (lower) by any amount. (Our f64 finds slightly
-  better optima than torch's f32 on chaotic models, so a few give *lower* loss — that's a
-  win, not a failure.)
+- **mean LogLoss — one-sided tolerance** — it must not be **worse** (higher) than upstream by
+  more than **0.0005**, but may be **better** (lower) by any amount. `(better)` marks configs
+  where Rust's f64 finds a lower loss than torch's f32 (chaotic models — HLR / FSRS v1–v3 /
+  ACT-R) — always allowed by the one-sided rule.
 
-Two configurations are checked wherever upstream publishes a reference: **`--short --secs`**
-(fractional-day intervals — the recommended FSRS setting) and **`--short`** (integer-day
-intervals, which additionally applies the upstream outlier / non-continuous-row removal). A
-`—` in a LogLoss column means upstream has no reference file for that algorithm in that
-configuration.
+### Verified — 55 configurations
 
-| Algorithm | `size` exact | LogLoss `--short --secs` | LogLoss `--short` | Status |
-| --- | :---: | --- | --- | --- |
-| AVG | ✅ | 0.000000 (bit-exact) | — | ✅ verified |
-| SM-2 | ✅ | 0.000000 (bit-exact) | +0.000000 | ✅ verified |
-| SM-2 (trainable) | ✅ | −0.000620 (better) | — | ✅ verified¹ |
-| MOVING-AVG | ✅ | 0.000000 (bit-exact) | — | ✅ verified |
-| DASH | ✅ | −0.000006 | +0.000155 | ✅ verified |
-| DASH[MCM] | ✅ | −0.000001 | — | ✅ verified |
-| DASH[ACT-R] | ✅ | −0.000051 | — | ✅ verified |
-| HLR | ✅ | −0.004352 (better) | −0.000763 (better) | ✅ verified¹ |
-| RMSE-BINS-EXPLOIT | ✅ | 0.000000 vs current Python⁴ | — | ✅ verified |
-| FSRS v1 | ✅ | −0.001477 (better) | — | ✅ verified¹ |
-| FSRS v2 | ✅ | −0.001793 (better) | — | ✅ verified¹ |
-| FSRS v3 | ✅ | −0.002348 (better) | — | ✅ verified¹ |
-| FSRS v4 | ✅ | −0.000341 | — | ✅ verified |
-| FSRS-4.5 | ✅ | +0.000249 | — | ✅ verified |
-| FSRS-5 | ✅ | +0.000037 | +0.000001 | ✅ verified |
-| FSRS-6 | ✅ | +0.000049 | −0.000008 | ✅ verified |
-| ACT-R | ✅ | −0.001420 (better) | — | ✅ verified¹ ⁵ |
-| Ebisu v2 | ✅ | +0.000000 | — | ✅ verified |
-| FSRS-7 | — | — | — | ⏸ deferred² |
-| LogisticRegression, FSRS-rs | — | — | — | 📋 planned |
-| GRU, LSTM, RWKV, Transformer, NN-17 | — | — | — | 🐍 Python path³ |
+| Configuration | `size` | mean LogLoss vs upstream | Status |
+| --- | :---: | --- | --- |
+| `AVG` | ✅ | +0.000000 | ✅ verified |
+| `AVG --secs` | ✅ | +0.000000 ⁴ | ✅ verified |
+| `AVG --short --secs` | ✅ | +0.000000 | ✅ verified |
+| `SM2` | ✅ | +0.000000 | ✅ verified |
+| `SM2 --short` | ✅ | +0.000000 | ✅ verified |
+| `SM2 --short --secs` | ✅ | +0.000000 | ✅ verified |
+| `SM2-trainable` | ✅ | +0.000205 | ✅ verified |
+| `SM2-trainable --short --secs` | ✅ | -0.000466 | ✅ verified |
+| `MOVING-AVG` | ✅ | +0.000000 | ✅ verified |
+| `MOVING-AVG --short --secs` | ✅ | +0.000000 | ✅ verified |
+| `RMSE-BINS-EXPLOIT` | ✅ | +0.000000 | ✅ verified |
+| `RMSE-BINS-EXPLOIT --short --secs` | ✅ | -0.019035 (better) ⁴ | ✅ verified |
+| `Ebisu-v2` | ✅ | +0.000000 | ✅ verified |
+| `Ebisu-v2 --short --secs` | ✅ | +0.000000 | ✅ verified |
+| `DASH` | ✅ | +0.000000 | ✅ verified |
+| `DASH --secs` | ✅ | +0.000000 ⁴ | ✅ verified |
+| `DASH --short` | ✅ | +0.000155 | ✅ verified |
+| `DASH --short --secs` | ✅ | -0.000006 | ✅ verified |
+| `DASH --recency` | ✅ | -0.001471 (better) | ✅ verified |
+| `DASH[MCM]` | ✅ | -0.000114 | ✅ verified |
+| `DASH[MCM] --secs` | ✅ | +0.000000 ⁴ | ✅ verified |
+| `DASH[MCM] --short --secs` | ✅ | -0.000001 | ✅ verified |
+| `DASH[ACT-R]` | ✅ | +0.000001 | ✅ verified |
+| `DASH[ACT-R] --secs` | ✅ | -0.000000 ⁴ | ✅ verified |
+| `DASH[ACT-R] --short --secs` | ✅ | -0.000051 | ✅ verified |
+| `HLR` | ✅ | -0.000556 (better) | ✅ verified |
+| `HLR --short` | ✅ | -0.001039 (better) | ✅ verified |
+| `HLR --short --secs` | ✅ | -0.005829 (better) | ✅ verified |
+| `ACT-R` | ✅ | -0.008047 (better) | ✅ verified ⁵ |
+| `ACT-R --secs` | ✅ | -0.011462 (better) ⁴ | ✅ verified ⁵ |
+| `ACT-R --short --secs` | ✅ | -0.001420 (better) | ✅ verified ⁵ |
+| `FSRSv1` | ✅ | +0.000445 | ✅ verified |
+| `FSRSv1 --short --secs` | ✅ | -0.000238 | ✅ verified |
+| `FSRSv2` | ✅ | -0.000368 | ✅ verified |
+| `FSRSv2 --short --secs` | ✅ | -0.000303 | ✅ verified |
+| `FSRSv3` | ✅ | -0.000186 | ✅ verified |
+| `FSRSv3 --short --secs` | ✅ | -0.000119 | ✅ verified |
+| `FSRSv4` | ✅ | -0.000525 (better) | ✅ verified |
+| `FSRSv4 --short --secs` | ✅ | -0.000342 | ✅ verified |
+| `FSRS-4.5` | ✅ | -0.000313 | ✅ verified |
+| `FSRS-4.5 --short --secs` | ✅ | +0.000243 | ✅ verified |
+| `FSRS-5 --short` | ✅ | +0.000002 | ✅ verified |
+| `FSRS-5 --short --secs` | ✅ | -0.000060 | ✅ verified |
+| `FSRS-6 --short` | ✅ | -0.000008 | ✅ verified |
+| `FSRS-6 --short --secs` | ✅ | -0.000026 | ✅ verified |
+| `FSRS-6 --default --short` | ✅ | -0.000000 | ✅ verified |
+| `FSRS-6 --default --short --secs` | ✅ | -0.000001 | ✅ verified |
+| `FSRS-6 --S0 --short` | ✅ | -0.000007 | ✅ verified |
+| `FSRS-6 --S0 --short --secs` | ✅ | +0.000069 | ✅ verified |
+| `FSRS-6 --two_buttons --short` | ✅ | +0.000002 | ✅ verified |
+| `FSRS-6 --two_buttons --short --secs` | ✅ | +0.000110 | ✅ verified |
+| `FSRS-6 --recency` | ✅ | -0.000007 | ✅ verified |
+| `FSRS-6 --short --recency` | ✅ | -0.000005 | ✅ verified |
+| `FSRS-6 --short --secs --recency` | ✅ | -0.000022 | ✅ verified |
+| `FSRS-6 --short --recency --train_equals_test` | ✅ | +0.000431 | ✅ verified |
 
-¹ Models with extreme predictions (HLR's `2^d`, FSRS's `0.9^(t/s)`, ACT-R's power-law
-activation) have a few chaotic users where tiny f64-vs-f32 float differences amplify. The
-training core is proven correct (DASH matches to 6e-6, and the per-user *median* diff is
-~1e-5); Rust's f64 finds slightly better optima, so the mean LogLoss comes out *lower*
-(better) than upstream — which passes the one-sided tolerance.
+### Not yet reproduced — 34 configurations
 
-² FSRS-7's model is still being changed upstream, so it is intentionally not ported yet.
+| Configuration(s) | Status |
+| --- | --- |
+| `FSRS-6 --partitions deck` / `--partitions preset` (3) | 📋 planned — needs deck/preset partitioning |
+| Anki (3), LogisticRegression (2), FSRS-6-one-step (1), FSRS-rs (1) | 📋 planned — model ports (FSRS-rs imports the `fsrs` crate) |
+| FSRS-7 (10 flag variants) | ⏸ deferred — upstream model still WIP |
+| GRU, LSTM, RWKV, RWKV-P, NN-17, Transformer (14) | 🐍 Python path — Reptile/neural, kept in Python |
 
-³ GRU/LSTM use the Reptile optimizer and the neural models are hard to port; these keep the
-Python runtime path.
+⁴ The committed upstream file for this config is **stale** (predates a pipeline change), so it
+is not a valid reference — the binding target (rule #5) is the *current* Python source, which
+the Rust output matches. `-secs` configs are verified against a freshly-generated current-
+Python golden (spot-checked on 15 users); everything else is on 1000 users.
 
-⁴ The Rust output is bit-identical to the *current* Python source. The committed upstream
-`result/` file for this model is stale (predates a model/pipeline change), so it is not a
-valid reference here — the binding target (rule #5) is the current Python version.
-
-⁵ ACT-R is correct but currently slow: its activation is an all-pairs sum over prior
-reviews (O(reviews²) per row), so it's a target for the planned performance pass.
+⁵ ACT-R is correct but slow — its activation is an O(reviews²) all-pairs sum over prior
+reviews, a target for the planned performance pass.
 
 *Both the `--secs` and non-`--secs` feature paths are implemented; the non-`--secs` path
 reproduces the upstream outlier / non-continuous-row removal exactly, so `size` matches
