@@ -251,9 +251,26 @@ review_th order, built from `prior_dt_active`/`prior_ratings` (port of `convert_
 *git tag* (which pins fsrs git rev `932bb7af` = FSRS-5, 19 params). The installed wheel returns
 21 params (FSRS-6); a panic-path probe revealed it links **crates.io `fsrs 4.1.1`** (which exports
 19-param `DEFAULT_PARAMETERS` but trains a 21-param model). So Cargo.toml pins `fsrs = "=4.1.1"`
-(crates.io, NOT a git rev). Weights aren't bit-exact (burn f32 training has parallel-reduction
-nondeterminism) but match closely; 20-user spot check −0.000378 (size exact). Full 1000-user run
-is slow (~2h: fsrs/burn training per split per user) — verify before marking done.
+(crates.io, NOT a git rev). Weights aren't bit-exact but
+match closely; 20-user spot check −0.000378 (size exact).
+
+**FSRS-rs 1000-user result + BLOCKER (2026-06-09):** size exact (32 668 830), but mean LogLoss
+**+0.000766** — just OVER the +0.0005 one-sided tolerance. Root-caused, NOT a simple bug:
+`fsrs::benchmark` is fully deterministic AND thread-count-independent (verified: identical items →
+identical weights), so identical items must reproduce the reference bit-for-bit. My weights differ
+slightly (±0.06–0.2, both signs) ⇒ my training ITEMS differ from the reference's. But the
+reference's items **cannot be regenerated**: the current Python `convert_to_items` CRASHES on the
+present pipeline's `t_history` — for user 1, 17% of rows (all `i==2`, first-review) have an EMPTY
+`t_history` and the rest are FLOAT-formatted (`"1.0"`), both of which break `int(t)`. This is true
+of BOTH the current HEAD and the pre-refactor `c8b492e` — so the reference came from an even older
+upstream pipeline that no longer exists in Expertium's fork (the `df47eedc` "bit-exact data-pipeline"
+sub-project + earlier changes diverged it; that work made delta_t float-typed and dropped the
+new-card prior for some cards → empty first-review history). The residual gap is purely the
+first-review (`i==2`, no-prior) training-item construction, whose correct behaviour is defined only
+by that unavailable pipeline. My port is correct for every well-defined case (right crate, right
+API, size exact, normal items `[(0,r0),(Δt,r)]`); skipping no-prior rows is one reasonable choice.
+**FSRS-rs is therefore NOT strictly verifiable against this stale reference** without the historical
+upstream pipeline. Left as implemented (+0.000766) pending Andrew's call on the reference.
 
 **REMAINING:** FSRS-rs full 1000-user verify (run in progress); 90%/ConstantModel (no upstream
 ref → can't verify); `--raw`/`--file`/`--weights` output; ICI(lowess)/smECE(relplot) metrics;
