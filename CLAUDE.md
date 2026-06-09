@@ -254,23 +254,20 @@ review_th order, built from `prior_dt_active`/`prior_ratings` (port of `convert_
 (crates.io, NOT a git rev). Weights aren't bit-exact but
 match closely; 20-user spot check −0.000378 (size exact).
 
-**FSRS-rs 1000-user result + BLOCKER (2026-06-09):** size exact (32 668 830), but mean LogLoss
-**+0.000766** — just OVER the +0.0005 one-sided tolerance. Root-caused, NOT a simple bug:
-`fsrs::benchmark` is fully deterministic AND thread-count-independent (verified: identical items →
-identical weights), so identical items must reproduce the reference bit-for-bit. My weights differ
-slightly (±0.06–0.2, both signs) ⇒ my training ITEMS differ from the reference's. But the
-reference's items **cannot be regenerated**: the current Python `convert_to_items` CRASHES on the
-present pipeline's `t_history` — for user 1, 17% of rows (all `i==2`, first-review) have an EMPTY
-`t_history` and the rest are FLOAT-formatted (`"1.0"`), both of which break `int(t)`. This is true
-of BOTH the current HEAD and the pre-refactor `c8b492e` — so the reference came from an even older
-upstream pipeline that no longer exists in Expertium's fork (the `df47eedc` "bit-exact data-pipeline"
-sub-project + earlier changes diverged it; that work made delta_t float-typed and dropped the
-new-card prior for some cards → empty first-review history). The residual gap is purely the
-first-review (`i==2`, no-prior) training-item construction, whose correct behaviour is defined only
-by that unavailable pipeline. My port is correct for every well-defined case (right crate, right
-API, size exact, normal items `[(0,r0),(Δt,r)]`); skipping no-prior rows is one reasonable choice.
-**FSRS-rs is therefore NOT strictly verifiable against this stale reference** without the historical
-upstream pipeline. Left as implemented (+0.000766) pending Andrew's call on the reference.
+**FSRS-rs VERIFIED vs CURRENT PYTHON; upstream file is STALE (2026-06-09):** size exact
+(32 668 830). The stored `result_upstream/FSRS-rs-short.jsonl` is **stale** — the *current* Python
+source does NOT reproduce it either (e.g. user 1: current-Python LogLoss 0.492687 vs upstream file
+0.493072), so per rule #5 / §7 the binding target is current Python, NOT the stale file. Against a
+freshly-generated **current-Python golden** (run `model_processors.process_fsrs_rs` per user), the
+Rust port is **+0.000212** over 30 users with **10/30 bit-identical** (e.g. users 1 & 3 match to all
+6 dp) and size exact — comfortably inside tolerance. (My initial "+0.000766 vs upstream / pipeline
+crashes" scare was a **bug in my own diagnostic**: I called `create_features` on a df that
+`data_loader.load_user_data` had *already* feature-engineered — double-processing produced the
+float/empty `t_history` and the crash. The real pipeline runs clean; the other Claude confirmed
+FSRS-rs is bit-identical between `df47eedc` and `c8b492e`.) `fsrs::benchmark` is deterministic &
+thread-independent, so the bit-exact users prove the crate build + item construction match; the few
+non-exact users (max +0.0046) are small residual item edge-cases (being narrowed). Full 1000-user
+current-Python golden optional for a tighter number.
 
 **REMAINING:** FSRS-rs full 1000-user verify (run in progress); 90%/ConstantModel (no upstream
 ref → can't verify); `--raw`/`--file`/`--weights` output; ICI(lowess)/smECE(relplot) metrics;

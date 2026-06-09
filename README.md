@@ -128,7 +128,7 @@ criteria:
 
 | Configuration(s) | Status |
 | --- | --- |
-| FSRS-rs `--short` (1) | 🔬 implemented (imports `fsrs` 4.1.1, `--features fsrs-rs`); `size` exact, 1000-user LogLoss **+0.000766** (just over the +0.0005 tolerance). The reference is **not reproducible by the current Python source** (its `convert_to_items` crashes on the present pipeline's `t_history`), so the residual first-review item-handling can't be pinned down locally — see `CLAUDE.md` |
+| FSRS-rs `--short` (1) | 🔬 implemented (imports `fsrs` 4.1.1, `--features fsrs-rs`); `size` exact. The committed `result_upstream` file is **stale** (the current Python source doesn't reproduce it either), so it's measured against a fresh **current-Python golden**: **+0.000212** over a 30-user golden, 10/30 bit-identical. Full 1000-user golden pending for the headline number — see `CLAUDE.md` |
 | FSRS-7 (10 flag variants) | ⏸ deferred — upstream model still WIP |
 | GRU, LSTM, RWKV, RWKV-P, NN-17, Transformer (14) | 🐍 Python path — Reptile/neural, kept in Python |
 
