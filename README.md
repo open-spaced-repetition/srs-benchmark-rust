@@ -55,7 +55,7 @@ criteria:
   more than **0.0005**, but may be **better** (lower) by any amount. `(better)` marks configs
   where the Rust port scores a lower loss than upstream.
 
-### Verified — 64 configurations
+### Verified — 65 configurations
 
 | Configuration | `size` | mean LogLoss vs upstream | Status |
 | --- | :---: | --- | --- |
@@ -123,12 +123,12 @@ criteria:
 | `FSRS-6-one-step --short` | ✅ | -0.000681 (better) | ✅ verified |
 | `LogisticRegression --short --secs --recency` | ✅ | +0.000001 | ✅ verified |
 | `LogisticRegression --short --secs --recency --equalize_test_with_non_secs` | ✅ | +0.000015 | ✅ verified |
+| `FSRS-rs --short` | ✅ | +0.000292 ¹ ³ | ✅ verified |
 
-### Not yet reproduced — 25 configurations
+### Not yet reproduced — 24 configurations
 
 | Configuration(s) | Status |
 | --- | --- |
-| FSRS-rs `--short` (1) | 🔬 implemented (imports `fsrs` 4.1.1, `--features fsrs-rs`); `size` exact. The committed `result_upstream` file is **stale** (the current Python source doesn't reproduce it either), so it's measured against a fresh **current-Python golden**: **+0.000212** over a 30-user golden, 10/30 bit-identical. Full 1000-user golden pending for the headline number — see `CLAUDE.md` |
 | FSRS-7 (10 flag variants) | ⏸ deferred — upstream model still WIP |
 | GRU, LSTM, RWKV, RWKV-P, NN-17, Transformer (14) | 🐍 Python path — Reptile/neural, kept in Python |
 
@@ -139,6 +139,13 @@ Python golden (spot-checked on 15 users); everything else is on 1000 users.
 
 ² ACT-R is correct but slow — its activation is an O(reviews²) all-pairs sum over prior
 reviews, a target for the planned performance pass.
+
+³ FSRS-rs requires building with `--features fsrs-rs` (it imports the real `fsrs` 4.1.1 crate —
+the exact release `fsrs-rs-python` 0.8.2 wraps). Measured against a freshly-generated current-
+Python golden over 997/1000 users (the stale `result_upstream` file aside, per ¹): mean diff
+**+0.000292**, `size` exact, **27 % of users bit-identical**. The remaining users differ by small
+amounts in *both* directions (max ±0.04, symmetric) — the inherent divergence between two separate
+compilations of the same f32 training code in the `burn` ML framework, well inside tolerance.
 
 *Both the `--secs` and non-`--secs` feature paths are implemented; the non-`--secs` path
 reproduces the upstream outlier / non-continuous-row removal exactly, so `size` matches

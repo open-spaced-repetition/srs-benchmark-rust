@@ -207,7 +207,7 @@ oracle). The data pipeline + non-trained models are already fast.
 `process_partitioned` branch + `data::read_user_partition_map` cards→decks join), and
 LogisticRegression (`models/logistic_regression.rs`: 34-feature linear model, AdamW, analytic
 gradient; feature_rating/first_rating use the FULL pre-filter card sequence while feat_elapsed
-uses the surviving prior — that was the bug, +0.024 → +0.000001). **64 configs verified.**
+uses the surviving prior — that was the bug, +0.024 → +0.000001). **65 configs verified.**
 **Determinism + BCE-clamp bugs fixed** (see notes above).
 
 **FSRS-6-one-step PORTED + VERIFIED (2026-06-08):** `models/fsrs_v6_one_step.rs`. Online
@@ -265,13 +265,16 @@ crashes" scare was a **bug in my own diagnostic**: I called `create_features` on
 `data_loader.load_user_data` had *already* feature-engineered — double-processing produced the
 float/empty `t_history` and the crash. The real pipeline runs clean; the other Claude confirmed
 FSRS-rs is bit-identical between `df47eedc` and `c8b492e`.) `fsrs::benchmark` is deterministic &
-thread-independent, so the bit-exact users prove the crate build + item construction match; the few
-non-exact users (max +0.0046) are small residual item edge-cases (being narrowed). Full 1000-user
-current-Python golden optional for a tighter number.
+thread-independent. **Full current-Python golden (997/1000 users, parallel, RAYON_NUM_THREADS=1):
+mean diff +0.000292, size exact, 269/997 (27 %) bit-identical**, the rest differing by small amounts
+in BOTH directions (max ±0.04, symmetric) ⇒ the residual is f32 divergence between two separate
+`burn` compilations of the same `fsrs 4.1.1` training code, NOT an item bug — well inside the
+one-sided tolerance. FSRS-rs is VERIFIED vs current Python. Requires `--features fsrs-rs`.
 
-**REMAINING:** FSRS-rs full 1000-user verify (run in progress); 90%/ConstantModel (no upstream
-ref → can't verify); `--raw`/`--file`/`--weights` output; ICI(lowess)/smECE(relplot) metrics;
-Python path for GRU/LSTM/RWKV/Transformer/NN-17; the perf pass. FSRS-7 deferred (10 configs).
+**REMAINING:** 90%/ConstantModel (no upstream ref → can't verify); `--raw`/`--file`/`--weights`
+output; ICI(lowess)/smECE(relplot) metrics; Python path for GRU/LSTM/RWKV/Transformer/NN-17; the
+perf pass. FSRS-7 deferred (10 configs). All 65 verifiable upstream configs are now ported &
+verified; the remaining 24 are deferred (FSRS-7 ×10) or Python-path neural (×14).
 
 ## 7. Conventions
 
