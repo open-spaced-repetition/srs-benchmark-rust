@@ -123,7 +123,7 @@ criteria:
 | `FSRS-6-one-step --short` | ✅ | -0.000681 (better) | ✅ verified |
 | `LogisticRegression --short --secs --recency` | ✅ | +0.000001 | ✅ verified |
 | `LogisticRegression --short --secs --recency --equalize_test_with_non_secs` | ✅ | +0.000015 | ✅ verified |
-| `FSRS-rs --short` | ✅ | +0.000292 ¹ ³ | ✅ verified |
+| `FSRS-rs --short` | ✅ | +0.000299 ¹ ³ | ✅ verified |
 
 ### Not yet reproduced — 24 configurations
 
@@ -142,10 +142,11 @@ reviews, a target for the planned performance pass.
 
 ³ FSRS-rs requires building with `--features fsrs-rs` (it imports the real `fsrs` 4.1.1 crate —
 the exact release `fsrs-rs-python` 0.8.2 wraps). Measured against a freshly-generated current-
-Python golden over 997/1000 users (the stale `result_upstream` file aside, per ¹): mean diff
-**+0.000292**, `size` exact, **27 % of users bit-identical**. The remaining users differ by small
-amounts in *both* directions (max ±0.04, symmetric) — the inherent divergence between two separate
-compilations of the same f32 training code in the `burn` ML framework, well inside tolerance.
+Python golden over all 1000 users (the stale `result_upstream` file aside, per ¹): mean diff
+**+0.000299**, `size` exact, **269/1000 (27 %) of users bit-identical**. The remaining users differ
+by small amounts in *both* directions (387 above, 344 below; max ±0.04, symmetric) — the inherent
+divergence between two separate compilations of the same f32 training code in the `burn` ML
+framework, well inside tolerance.
 
 *Both the `--secs` and non-`--secs` feature paths are implemented; the non-`--secs` path
 reproduces the upstream outlier / non-continuous-row removal exactly, so `size` matches

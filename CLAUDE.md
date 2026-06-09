@@ -265,11 +265,13 @@ crashes" scare was a **bug in my own diagnostic**: I called `create_features` on
 `data_loader.load_user_data` had *already* feature-engineered — double-processing produced the
 float/empty `t_history` and the crash. The real pipeline runs clean; the other Claude confirmed
 FSRS-rs is bit-identical between `df47eedc` and `c8b492e`.) `fsrs::benchmark` is deterministic &
-thread-independent. **Full current-Python golden (997/1000 users, parallel, RAYON_NUM_THREADS=1):
-mean diff +0.000292, size exact, 269/997 (27 %) bit-identical**, the rest differing by small amounts
-in BOTH directions (max ±0.04, symmetric) ⇒ the residual is f32 divergence between two separate
-`burn` compilations of the same `fsrs 4.1.1` training code, NOT an item bug — well inside the
-one-sided tolerance. FSRS-rs is VERIFIED vs current Python. Requires `--features fsrs-rs`.
+thread-independent. **Full 1000-user current-Python golden (parallel, RAYON_NUM_THREADS=1; the 3
+heaviest users — e.g. u927 with 375 k reviews — finished single-threaded): mean diff +0.000299,
+size exact (sum 32 668 830), 269/1000 (27 %) bit-identical**, the rest differing by small amounts in
+BOTH directions (387 above, 344 below; max ±0.04, symmetric) ⇒ the residual is f32 divergence
+between two separate `burn` compilations of the same `fsrs 4.1.1` training code, NOT an item bug —
+well inside the one-sided tolerance. FSRS-rs is VERIFIED vs current Python. Requires `--features
+fsrs-rs`.
 
 **REMAINING:** 90%/ConstantModel (no upstream ref → can't verify); `--raw`/`--file`/`--weights`
 output; ICI(lowess)/smECE(relplot) metrics; Python path for GRU/LSTM/RWKV/Transformer/NN-17; the
