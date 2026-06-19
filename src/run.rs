@@ -20,9 +20,12 @@ use crate::models;
 /// Process one user end-to-end (timed). Returns the result JSON object, or an error string.
 fn process_user(cfg: &Config, user_id: i64) -> Result<Value, String> {
     let t0 = Instant::now();
+    let profile = std::env::var_os("FSRS_PROFILE").is_some();
 
     let raw = read_user_revlogs(&cfg.data_path, user_id)?;
+    let t_read = t0.elapsed();
     let mut ds = create_features(&raw, cfg)?;
+    let t_feat = t0.elapsed();
     if ds.len() < 6 {
         return Err(format!("{user_id} does not have enough data."));
     }
@@ -60,16 +63,35 @@ fn process_user(cfg: &Config, user_id: i64) -> Result<Value, String> {
         "FSRS-5" => models::fsrs_v5::process(&ds, cfg),
         "FSRS-6" => models::fsrs_v6::process(&ds, cfg),
         "FSRS-6-one-step" => models::fsrs_v6_one_step::process(&ds, cfg),
+        "FSRS-7" => models::fsrs_v7::process(&ds, cfg),
         #[cfg(feature = "fsrs-rs")]
         "FSRS-rs" => models::fsrs_rs::process(&ds, cfg),
         #[cfg(not(feature = "fsrs-rs"))]
         "FSRS-rs" => {
             return Err("FSRS-rs requires building with `--features fsrs-rs`".into())
         }
+        #[cfg(feature = "neural")]
+        "GRU" => models::gru::process(&ds, cfg),
+        #[cfg(feature = "neural")]
+        "LSTM" => models::lstm::process(&ds, cfg),
+        #[cfg(not(feature = "neural"))]
+        "GRU" => return Err("GRU requires building with `--features neural`".into()),
+        #[cfg(not(feature = "neural"))]
+        "LSTM" => return Err("LSTM requires building with `--features neural`".into()),
         other => return Err(format!("model '{other}' not yet ported")),
     };
 
     let time_s = t0.elapsed().as_secs_f64();
+    if profile {
+        let t_model = t0.elapsed();
+        let read_ms = t_read.as_secs_f64() * 1e3;
+        let feat_ms = (t_feat - t_read).as_secs_f64() * 1e3;
+        let model_ms = (t_model - t_feat).as_secs_f64() * 1e3;
+        eprintln!(
+            "PROFILE user={user_id} rows={} read_ms={read_ms:.1} feat_ms={feat_ms:.1} model_ms={model_ms:.1}",
+            ds.len()
+        );
+    }
     let _ = Params::None;
     Ok(evaluate(&out.eval_rows, &out.p, cfg, user_id, out.params, time_s))
 }

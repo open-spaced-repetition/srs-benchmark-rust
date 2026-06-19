@@ -27,6 +27,8 @@ pub struct Card {
     pub dt_active: Vec<f64>,
     /// `max(0, elapsed_days)` per review (used for last_rating and non-secs intervals).
     pub dt_int: Vec<i64>,
+    /// Raw review `duration` per review — the LSTM `--duration` tensor feature.
+    pub durations: Vec<i64>,
 }
 
 /// One review row after feature engineering, in final `review_th` order.
@@ -79,6 +81,10 @@ impl Dataset {
     /// Prior active intervals of `row`'s card, in order.
     pub fn prior_dt_active(&self, row: &Row) -> &[f64] {
         &self.cards[row.card_idx as usize].dt_active[..row.pos as usize]
+    }
+    /// Prior review durations of `row`'s card (raw `duration`), in order — LSTM `--duration`.
+    pub fn prior_durations(&self, row: &Row) -> &[i64] {
+        &self.cards[row.card_idx as usize].durations[..row.pos as usize]
     }
     /// Intervals `dt_active[1..=pos]` (length `pos`) — DASH's `t_history` is `t_item[1:]`.
     pub fn intervals_from_second(&self, row: &Row) -> &[f64] {
@@ -198,6 +204,7 @@ pub fn create_features(raw: &crate::data::RawRevlogs, cfg: &Config) -> Result<Da
         let ratings: Vec<i64> = group.iter().map(|r| r.rating).collect();
         let dt_active: Vec<f64> = group.iter().map(|r| r.delta_t).collect();
         let dt_int: Vec<i64> = group.iter().map(|r| r.delta_t_int).collect();
+        let durations: Vec<i64> = group.iter().map(|r| r.duration).collect();
 
         let mut lapse_prefix = 0i64; // exclusive prefix sum of is_lapse
         let mut i_run = 0i64; // running count of elapsed_days>0
@@ -249,6 +256,7 @@ pub fn create_features(raw: &crate::data::RawRevlogs, cfg: &Config) -> Result<Da
             ratings,
             dt_active,
             dt_int,
+            durations,
         });
         start = end;
     }

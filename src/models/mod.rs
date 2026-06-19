@@ -21,7 +21,14 @@ pub mod fsrs_v4dot5;
 pub mod fsrs_v5;
 pub mod fsrs_v6;
 pub mod fsrs_v6_one_step;
+pub mod fsrs_v7;
+pub mod fsrs_v7_grad;
+pub mod fsrs_v7_simd;
+#[cfg(feature = "neural")]
+pub mod gru;
 pub mod hlr;
+#[cfg(feature = "neural")]
+pub mod lstm;
 pub mod logistic_regression;
 pub mod moving_avg;
 pub mod rmse_bins_exploit;
@@ -49,5 +56,17 @@ pub(crate) fn recency_weights(n: usize, recency: bool) -> Vec<f64> {
             let x = if n <= 1 { 0.0 } else { k as f64 / (n as f64 - 1.0) };
             0.25 + 0.75 * x * x * x
         })
+        .collect()
+}
+
+/// FSRS-7's own recency weights (`_apply_recency_weighting`, model_name == "FSRS-7"):
+/// `0.0667 + 0.9333 * (k/n)^11.25`, k 0-based, denominator `n` (NOT n-1).
+pub(crate) fn recency_weights_fsrs7(n: usize, recency: bool) -> Vec<f64> {
+    if !recency {
+        return vec![1.0; n];
+    }
+    let denom = n.max(1) as f64;
+    (0..n)
+        .map(|k| 0.0667 + 0.9333 * (k as f64 / denom).powf(11.25))
         .collect()
 }

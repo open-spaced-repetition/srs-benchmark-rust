@@ -7,6 +7,8 @@ mod eval;
 mod features;
 mod metrics;
 mod models;
+#[cfg(feature = "neural")]
+mod neural;
 mod run;
 mod split;
 mod train;

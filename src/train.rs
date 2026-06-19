@@ -166,6 +166,10 @@ pub struct TrainConfig {
     pub betas: (f64, f64),
     pub n_epoch: usize,
     pub batch_size: usize,
+    /// Keep the weights after the final epoch instead of the best-eval-loss checkpoint
+    /// (FSRS-7's `keep_final_epoch`). Skips the per-epoch eval entirely; the BatchLoader RNG
+    /// and weight updates are identical either way, so the trajectory is unchanged.
+    pub keep_final: bool,
 }
 
 impl Default for TrainConfig {
@@ -175,6 +179,7 @@ impl Default for TrainConfig {
             betas: (0.9, 0.999),
             n_epoch: 5,
             batch_size: 512,
+            keep_final: false,
         }
     }
 }
@@ -228,10 +233,12 @@ pub fn train_with_init<M: BatchModel>(m: &M, tc: &TrainConfig, init: Vec<f64>) -
     let mut lr = tc.lr; // lr[0] = base; advanced recurrently after each step
 
     for _epoch in 0..tc.n_epoch {
-        let loss = eval_loss(m, &params);
-        if loss < best_loss {
-            best_loss = loss;
-            best_w = params.clone();
+        if !tc.keep_final {
+            let loss = eval_loss(m, &params);
+            if loss < best_loss {
+                best_loss = loss;
+                best_w = params.clone();
+            }
         }
         let order_b = gen.randperm(batch_nums);
         for &bi in &order_b {
@@ -242,6 +249,9 @@ pub fn train_with_init<M: BatchModel>(m: &M, tc: &TrainConfig, init: Vec<f64>) -
             lr = cosine_advance(lr, t_max, step);
             step += 1;
         }
+    }
+    if tc.keep_final {
+        return params;
     }
     let loss = eval_loss(m, &params);
     if loss < best_loss {

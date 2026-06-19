@@ -18,6 +18,12 @@ fp32 = []
 # pulls in the burn ML framework — so it is OFF by default.
 # Build with: cargo build --release --features fsrs-rs
 fsrs-rs = ["dep:fsrs"]
+# Enable the neural models (NN-17, GRU, LSTM) via the `candle` ML framework (autodiff +
+# RNN cells + AdamW + a .pth checkpoint loader). Heavy build, so it is OFF by default.
+# Build with: cargo build --release --features neural
+neural = ["dep:candle-core", "dep:candle-nn"]
+# Run the neural models (GRU/LSTM) on the GPU via candle's CUDA backend.
+neural-cuda = ["neural", "candle-core/cuda", "candle-nn/cuda"]
 
 [dependencies]
 clap = { version = "4", features = ["derive"] }
@@ -26,9 +32,16 @@ serde_json = { version = "1", features = ["preserve_order"] }
 rayon = "1"
 parquet = { version = "58.3.0", features = ["arrow"] }
 arrow = "58.3.0"
+# Portable SIMD (4-wide f64 on AVX2) for the FSRS-7 gradient kernels. Lightweight, no transitive
+# deps. Used to vectorize the per-prefix recurrence forward+backward across 4 rows/lane.
+wide = "0.7"
 # FSRS-rs backend (optional; see the `fsrs-rs` feature above). Pinned to the exact crates.io
 # release that fsrs-rs-python 0.8.2 wraps, so trained weights match the upstream reference.
 fsrs = { version = "=4.1.1", optional = true }
+# Neural-model backend (optional; see the `neural` feature above). candle is a pure-Rust ML
+# framework providing autodiff, RNN cells, AdamW, and a PyTorch .pth checkpoint loader. CPU-only.
+candle-core = { version = "0.10.2", optional = true }
+candle-nn = { version = "0.10.2", optional = true }
 
 [profile.release]
 opt-level = 3

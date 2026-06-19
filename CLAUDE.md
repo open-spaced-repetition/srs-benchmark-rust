@@ -122,8 +122,8 @@ Tracked in the task list. Order:
   then ICI via lowess, smECE via relplot).
 - **P4** non-trainable: AVG, SM2, MOVING-AVG, Ebisu, RMSE-BINS-EXPLOIT (verify ±0.0005).
 - **P5** Adam-trained: HLR, DASH, ACT-R, FSRS v1–v6 + Rust Adam/autodiff.
-  - **FSRS-7 is DEFERRED** (Andrew 2026-06-07: the upstream FSRS-7 model is still WIP /
-    being changed — don't port it yet).
+  - **FSRS-7 PORTED 2026-06-18** (was deferred while WIP; the model is now *finished*). See
+    the FSRS-7 subsection in §6 below. `--sched_penalties` path still deferred.
 - **P6** remaining: LogisticRegression, FSRS-rs, one-step, partitions, equalize, recency,
   non-secs outlier path; Python path for GRU/LSTM/RWKV/Transformer/NN-17.
   - **FSRS-rs (Andrew 2026-06-07): IMPORT the real `fsrs-rs` crate**
@@ -275,8 +275,80 @@ fsrs-rs`.
 
 **REMAINING:** 90%/ConstantModel (no upstream ref → can't verify); `--raw`/`--file`/`--weights`
 output; ICI(lowess)/smECE(relplot) metrics; Python path for GRU/LSTM/RWKV/Transformer/NN-17; the
-perf pass. FSRS-7 deferred (10 configs). All 65 verifiable upstream configs are now ported &
-verified; the remaining 24 are deferred (FSRS-7 ×10) or Python-path neural (×14).
+perf pass. **FSRS-7 model now ported** (2026-06-18, verifying vs current Python; `--sched_penalties`
+deferred). GRU + LSTM ported natively via candle (`--features neural`/`neural-cuda`). All 65
+verifiable upstream configs ported & verified; FSRS-7 + neural-GRU/LSTM in progress.
+
+### FSRS-7 (34-param dual-stability) — PORTED 2026-06-18
+
+`models/fsrs_v7.rs`. Ported from the *current* `models/fsrs_v7.py` (the **finished** dual-stability
+FSRS-7, itself a port of `Expertium/fsrs-rs-speed-autoresearch`). 34 params, 3-component state
+`[long S, short S, difficulty]`; dual-trace forgetting curve (`short_recall` r1 + long r2, the
+difficulty effect on the long-term timescale); `next_stability(start=7|15)`; surprise-weighted-lapse
+`next_difficulty`; 34-box-clamp + monotonicity clipper. **No S0 fit** — trains from `INIT_W` directly.
+Adam (`lr=0.0118, betas=(0.70,0.98), n_epoch=9, batch=512`), CosineAnnealingLR, **keep-final-epoch**
+(new `TrainConfig.keep_final` — no best-eval checkpoint). Only penalty active by default: the
+L2-to-default prior `0.3333·Σ(w−w0)²/σ²` (added in `grad` with the `idx.len()·PENALTY_W_L2/n_rows`
+per-batch scale, mirroring FSRS-6's L2; σ = `L2_SIGMA`, 0..3 = 9999 ⇒ negligible). FSRS-7 has its
+**own recency weighting** `0.0667 + 0.9333·(k/n)^11.25` (`recency_weights_fsrs7`, k 0-based, denom n).
+Gradient finite-diff unit-tested (`fsrs7_grad_matches_finite_difference`). `--sched_penalties`
+(differentiable Newton+IFT interval penalties, `fsrs_v7_interval_penalty.py`) is **DEFERRED** per
+Andrew (2026-06-18).
+
+**FSRS-7 verification basis (Andrew, 2026-06-18):** binding target is the **current Python
+`srs-benchmark/result/FSRS-7-*.jsonl`** (NOT `result_upstream`), first **200 users by id**. PASS iff
+**`size` exact** (per-user AND sum) AND **|mean_rust − mean_python| ≤ 0.0005** (two-sided — FSRS-7
+must *match* the Python, which is itself a port of the Rust autoresearch impl). 200 users is assumed
+sufficient (don't run 10k yet). **Do NOT record the 200-user numbers in the README.** Configs in the
+current `result/`: plain, `-default`, `-recency`, each ×`-equalize_test_with_non_secs` (no
+preset/`sched_penalties` in current result/).
+
+**FSRS-7 SPEEDUP PROTOCOL (Andrew, 2026-06-18) — Phase 2:**
+- **Correctness gate:** after each speedup, the 200-user avg LogLoss (per config) must stay within
+  **±0.0005 of the ORIGINAL (first correct) Rust FSRS-7 baseline** — a FROZEN reference, NOT the
+  rolling champion (prevents slow drift over many edits). Record the original per-config 200-user avg.
+- **Speed decision:** measure per-user wall-clock `time_ms` (preprocessing → optimization → jsonl
+  write) over the 200 users. Keep a speedup iff a **Wilcoxon signed-rank test** on the 200 paired
+  (before, after) `time_ms` gives **p < 0.01** (significantly faster).
+- **Measure before & after SIMULTANEOUSLY** (1 thread each = 2 threads total) so thermal/scheduling
+  noise hits both runs equally. Speedups may be FSRS-7-specific (e.g. hand-written reverse-mode
+  gradients) or general. Reference `Expertium/fsrs-rs-speed-autoresearch` — most of the work is done
+  there; reuse it, don't reinvent (but new opportunities are welcome).
+- **2-thread cap while Andrew benchmarks Python** (2026-06-18): all Rust runs use `--processes 2`.
+- **Log EVERY iteration (Andrew, 2026-06-19)** in `_phase2/iterations.md`: timestamp, iter #,
+  LogLoss before, LogLoss after, avg time/user before, avg time/user after, Wilcoxon p-value (plus
+  the change description + accept/reject decision). Record rejects too. The `_phase2/` dir also holds
+  the reusable harness: `compare_loss.py` (correctness gate), `wilcoxon_time.py` (speed gate),
+  `run_timing.sh` (simultaneous baseline-vs-candidate timing). Baseline binary snapshot:
+  `target/release/script_baseline.exe`; champion snapshots named `script_<iter>.exe`.
+
+**FROZEN ORIGINAL baseline (2026-06-18, the first correct Rust FSRS-7; saved in `_fsrs7_baseline/`,
+which also holds per-user LogLoss + `time_ms`):** 200-user avg LogLoss — plain `0.323582`, default
+`0.346049`, default-equalize `0.378932`, recency `0.320772`, recency-equalize `0.345821`. Phase-1
+verify (vs current Python, 200 users): all **size-exact** (per-user + sum); ΔLogLoss plain +0.000004
+(57 common — Python file mid-regen), default +0.000000, default-equalize +0.000000, recency
+−0.000003, recency-equalize −0.000000 — all PASS. The training configs cost ~3000 s CPU / 200 users
+(Dual&lt;34&gt; forward-mode autodiff over the 3-state recurrence) — that's the Phase-2 speedup target;
+the `--default` configs don't train (~40 s).
+
+**PHASE-2 PROGRESS (2026-06-19) — 3 iterations accepted, ≈×10.9 on training (full log in
+`_phase2/iterations.md`):**
+- **iter 1 — analytic reverse-mode gradient** (`models/fsrs_v7_grad.rs`): hand-written scalar VJP
+  (f64 port of `fsrs-rs-speed-autoresearch/fsrs-rs/src/analytic.rs`) replaces the forward-mode
+  `Dual<34>` in `Model::grad`/`predict`. Same per-prefix batching ⇒ trajectory preserved (+0.000117
+  plain). **×3.96** training (p≈7e-35).
+- **iter 2 — windowed O(C) predict** (`fsrs_v7_grad::predict_card`): replay each card's sequence
+  ONCE, emit a prediction per requested position (bit-identical; prediction order is
+  trajectory-free). **×2.0** on `--default` configs (predict is ~80 % there; ~2.5 % of training).
+- **iter 3 — f64×4 SIMD gradient** (`models/fsrs_v7_simd.rs`): vectorize the per-prefix recurrence
+  fwd+bwd across 4 rows/lane (`wide`, AVX2), Cephes f64×4 exp/ln (~1 ulp). EXACT batching ⇒ all 5
+  configs identical to scalar at 6 dp. **×2.84** training (p≈7e-35). **Build:** `RUSTFLAGS="-C
+  target-cpu=native" cargo build --release` (plain build still correct, just SSE2-narrow).
+- **REJECTED by analysis — windowed O(N) *training* (card batching):** the reference repo's own
+  iter-18 data shows the card-grouped batching costs **+0.0009 LogLoss** (forced their band to
+  ±0.0015). That is &gt;our ±0.0005 AND would stop the Rust matching Python — so it stays out. (The
+  windowed *gradient* is math-identical; only the batch-composition change hurts. Windowing is safe
+  for predict, not training.)
 
 ## 7. Conventions
 

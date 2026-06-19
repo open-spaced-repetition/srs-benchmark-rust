@@ -24,6 +24,18 @@ framework. It is off by default; enable it with:
 cargo build --release --features fsrs-rs
 ```
 
+The **neural** models (NN-17, GRU, LSTM) are gated behind an optional `neural` cargo feature,
+because they use the [`candle`](https://github.com/huggingface/candle) ML framework (autodiff,
+RNN cells, AdamW, and a PyTorch `.pth` checkpoint loader), which is a heavy build. It is off by
+default; enable it with:
+
+```bash
+cargo build --release --features neural
+```
+
+These models load pretrained checkpoints from a `pretrain/` directory (the `*_pretrain.pth`
+files shipped with the Python `srs-benchmark`); see the per-model notes below.
+
 ## Run
 
 ```bash
@@ -51,9 +63,17 @@ criteria:
 
 - **`size` exact** — the per-user review count *and* its total across users must match the
   Python output **exactly** (validates the feature pipeline / row filtering).
-- **mean LogLoss — one-sided tolerance** — it must not be **worse** (higher) than upstream by
-  more than **0.0005**, but may be **better** (lower) by any amount. `(better)` marks configs
-  where the Rust port scores a lower loss than upstream.
+- **mean LogLoss — two-sided tolerance (±0.0005)** — the Rust mean LogLoss must be within
+  **±0.0005** of upstream. Anything outside `[−0.0005, +0.0005]` — **higher OR lower** — does
+  **not** pass and is investigated (a much-lower loss can be a genuine f64-vs-f32 optimum
+  difference, but it can also hide a bug, so it is no longer waved through). `(better)` marks
+  configs where the Rust port scores a lower loss than upstream.
+
+> **Re-review in progress (2026-06-19):** under the tightened two-sided rule, configs whose loss is
+> more than 0.0005 *below* upstream — notably `ACT-R`/`ACT-R --short --secs`, `HLR`/`--short`/`--short
+> --secs`, `DASH --recency`, `FSRSv4`, `FSRS-6 --short --secs --partitions preset` (the stale-upstream
+> `¹` rows excepted) — are being re-investigated (genuine f64-vs-f32 optimum, or a bug?). The
+> `✅ verified` marks below predate this change and will be updated as the investigation concludes.
 
 ### Verified — 65 configurations
 
