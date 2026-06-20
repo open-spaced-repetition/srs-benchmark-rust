@@ -27,9 +27,25 @@ pub struct Cli {
     #[arg(long = "max-user-id")]
     pub max_user_id: Option<i64>,
 
-    /// Use partitions instead of presets: none | deck | preset.
-    #[arg(long, default_value = "none", value_parser = ["none", "deck", "preset"])]
+    /// Use partitions instead of presets: none | deck | preset | smart.
+    /// `smart` = cluster decks by FSRS-7 param similarity into pseudo-presets (FSRS-7 only).
+    #[arg(long, default_value = "none", value_parser = ["none", "deck", "preset", "smart"])]
     pub partitions: String,
+
+    /// Smart-preset clustering linkage: single | complete | average | centroid | ward
+    /// (only used with `--partitions smart`).
+    #[arg(long = "cluster_method", default_value = "ward")]
+    pub cluster_method: String,
+
+    /// Smart-preset Mahalanobis-distance cut threshold (only used with `--partitions smart`).
+    #[arg(long = "cluster_threshold", default_value_t = 12.0)]
+    pub cluster_threshold: f64,
+
+    /// Run ALL 30 smart-preset experiments (5 linkages × 6 thresholds) in one pass, sharing the
+    /// per-deck training across them and writing one file per experiment. Ignores
+    /// `--cluster_method`/`--cluster_threshold`.
+    #[arg(long = "cluster_sweep", default_value_t = false)]
+    pub cluster_sweep: bool,
 
     /// Enable recency weighting during training.
     #[arg(long, default_value_t = false)]
@@ -137,6 +153,9 @@ pub struct Config {
     pub equalize_test_with_non_secs: bool,
     pub train_equals_test: bool,
     pub partitions: String,
+    pub cluster_method: String,
+    pub cluster_threshold: f64,
+    pub cluster_sweep: bool,
     pub dev_mode: bool,
 
     pub max_user_id: Option<i64>,
@@ -158,6 +177,15 @@ pub struct Config {
     pub seed: u64,
 
     base_file_name: String,
+}
+
+/// Format a cluster threshold for the output filename: `12.0 -> "12"`, `7.5 -> "7.5"`.
+pub(crate) fn fmt_threshold(t: f64) -> String {
+    if t.fract() == 0.0 {
+        format!("{}", t as i64)
+    } else {
+        format!("{t}")
+    }
 }
 
 impl Config {
@@ -202,7 +230,13 @@ impl Config {
         if cli.train_equals_test {
             parts.push("-train_equals_test".into());
         }
-        if cli.partitions != "none" {
+        if cli.partitions == "smart" {
+            // Each (method, threshold) experiment writes a distinct file so they don't collide.
+            // In sweep mode the base has NO suffix; the sweep runner appends one per experiment.
+            if !cli.cluster_sweep {
+                parts.push(format!("-smart-{}-{}", cli.cluster_method, fmt_threshold(cli.cluster_threshold)));
+            }
+        } else if cli.partitions != "none" {
             parts.push(format!("-{}", cli.partitions));
         }
         if cli.dev {
@@ -237,6 +271,9 @@ impl Config {
             equalize_test_with_non_secs: cli.equalize_test_with_non_secs,
             train_equals_test: cli.train_equals_test,
             partitions: cli.partitions.clone(),
+            cluster_method: cli.cluster_method.clone(),
+            cluster_threshold: cli.cluster_threshold,
+            cluster_sweep: cli.cluster_sweep,
             dev_mode: cli.dev,
             max_user_id: cli.max_user_id,
             num_processes: cli.processes,

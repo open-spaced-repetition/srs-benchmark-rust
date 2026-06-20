@@ -38,6 +38,9 @@ arrow = "58.3.0"
 # Portable SIMD (4-wide f64 on AVX2) for the FSRS-7 gradient kernels. Lightweight, no transitive
 # deps. Used to vectorize the per-prefix recurrence forward+backward across 4 rows/lane.
 wide = "0.7"
+# Pure-Rust, SciPy/fastcluster-compatible hierarchical agglomerative clustering (nn-chain, O(n²))
+# for smart-preset assignment (`src/cluster.rs`). Lightweight, no transitive deps.
+kodama = "0.3"
 # FSRS-rs backend (optional; see the `fsrs-rs` feature above). Pinned to the exact crates.io
 # release that fsrs-rs-python 0.8.2 wraps, so trained weights match the upstream reference.
 fsrs = { version = "=4.1.1", optional = true }

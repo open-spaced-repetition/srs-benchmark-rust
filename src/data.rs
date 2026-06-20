@@ -99,16 +99,30 @@ pub fn read_user_partition_map(
     user_id: i64,
     kind: &str,
 ) -> Result<std::collections::HashMap<i64, i64>, String> {
+    // A user may have a revlogs partition but no cards/decks partition. Python's data loader falls
+    // back to an empty merge, so `fillna(-1)` makes every card partition -1. An empty map here
+    // does the same (callers default missing cards to -1).
+    let cards_dir = data_path.join("cards").join(format!("user_id={user_id}"));
+    if !cards_dir.is_dir() {
+        return Ok(std::collections::HashMap::new());
+    }
     let (card_ids, deck_ids) = read_two_cols(data_path, "cards", user_id, "card_id", "deck_id")?;
     if kind == "deck" {
         return Ok(card_ids.into_iter().zip(deck_ids).collect());
     }
-    // preset: card → deck → preset_id
-    let (d_ids, preset_ids) = read_two_cols(data_path, "decks", user_id, "deck_id", "preset_id")?;
-    let deck2preset: std::collections::HashMap<i64, i64> = d_ids.into_iter().zip(preset_ids).collect();
+    // preset: card → deck → preset_id. Python left-merges then `fillna(-1)`, so a deck with no
+    // `decks` row yields preset_id -1 (the fallback is -1, NOT the deck id). A missing decks
+    // partition ⇒ empty deck→preset map ⇒ every card -1, matching the same `fillna(-1)`.
+    let decks_dir = data_path.join("decks").join(format!("user_id={user_id}"));
+    let deck2preset: std::collections::HashMap<i64, i64> = if decks_dir.is_dir() {
+        let (d_ids, preset_ids) = read_two_cols(data_path, "decks", user_id, "deck_id", "preset_id")?;
+        d_ids.into_iter().zip(preset_ids).collect()
+    } else {
+        std::collections::HashMap::new()
+    };
     let mut map = std::collections::HashMap::new();
     for (cid, did) in card_ids.into_iter().zip(deck_ids) {
-        map.insert(cid, *deck2preset.get(&did).unwrap_or(&did));
+        map.insert(cid, *deck2preset.get(&did).unwrap_or(&-1));
     }
     Ok(map)
 }

@@ -34,11 +34,15 @@ fn process_user(cfg: &Config, user_id: i64) -> Result<Value, String> {
     if cfg.use_secs_intervals && cfg.equalize_test_with_non_secs {
         ds.equalize_splits = Some(crate::features::build_equalize_splits(&raw, cfg, &ds)?);
     }
-    // `--partitions deck|preset`: tag each row with its card's deck/preset partition.
+    // `--partitions deck|preset|smart`: tag each row with its card's deck/preset partition
+    // (smart clusters decks, so it uses the deck map).
     if cfg.partitions != "none" {
-        let map = read_user_partition_map(&cfg.data_path, user_id, &cfg.partitions)?;
+        let kind = if cfg.partitions == "smart" { "deck" } else { cfg.partitions.as_str() };
+        let map = read_user_partition_map(&cfg.data_path, user_id, kind)?;
         for r in &mut ds.rows {
-            r.partition = *map.get(&r.card_id).unwrap_or(&0);
+            // Python left-merges cards/decks then `fillna(-1)`, so a revlog card with no `cards`
+            // row gets partition -1 (NOT 0, which is a real deck id). Match that.
+            r.partition = *map.get(&r.card_id).unwrap_or(&-1);
         }
     }
 
@@ -212,6 +216,24 @@ pub fn run(cfg: &Config) -> Result<(), String> {
         std::sync::atomic::Ordering::Relaxed,
     );
 
+    // `--partitions smart` (FSRS-7 only): load the precomputed covariance once, up front, so a
+    // missing/bad file fails cleanly instead of panicking inside a rayon worker.
+    if cfg.partitions == "smart" {
+        if cfg.model_name != "FSRS-7" {
+            return Err(format!(
+                "--partitions smart only supports FSRS-7 (got {})",
+                cfg.model_name
+            ));
+        }
+        crate::smart::load_global("_smart/smart_preset_cov.json")?;
+        if cfg.cluster_sweep {
+            return run_smart_sweep(cfg);
+        }
+        if cfg.cluster_method == "hdbscan" {
+            return Err("--cluster_method hdbscan is only supported with --cluster_sweep".into());
+        }
+    }
+
     let users = enumerate_users(&cfg.data_path, cfg.max_user_id)?;
 
     fs::create_dir_all("result").map_err(|e| e.to_string())?;
@@ -252,4 +274,103 @@ pub fn run(cfg: &Config) -> Result<(), String> {
         cfg.num_processes
     );
     Ok(())
+}
+
+/// `--partitions smart --cluster_sweep`: run a whole clustering-experiment matrix in one pass per
+/// user (sharing the per-deck training), writing one `result/<base>-smart-<suffix>.jsonl` each.
+/// `--cluster_method hdbscan` selects the 16-config HDBSCAN matrix; otherwise the 30 hierarchical.
+/// Resume is per-experiment: a user is recomputed unless present in EVERY experiment file.
+fn run_smart_sweep(cfg: &Config) -> Result<(), String> {
+    let hdbscan = cfg.cluster_method == "hdbscan";
+    let suffixes = if hdbscan {
+        crate::models::fsrs_v7::hdbscan_sweep_suffixes()
+    } else {
+        crate::models::fsrs_v7::hier_sweep_suffixes()
+    };
+    let users = enumerate_users(&cfg.data_path, cfg.max_user_id)?;
+    fs::create_dir_all("result").map_err(|e| e.to_string())?;
+
+    let base = cfg.evaluation_file_name();
+    let names: Vec<String> = suffixes.iter().map(|s| format!("{base}-smart-{s}")).collect();
+    let n_exp = names.len();
+    let paths: Vec<PathBuf> =
+        names.iter().map(|n| PathBuf::from(format!("result/{n}.jsonl"))).collect();
+
+    // Resume: a user is done iff present in EVERY experiment file (all written together).
+    let existing: Vec<(Vec<Value>, std::collections::HashSet<i64>)> =
+        paths.iter().map(|p| read_existing(p)).collect();
+    let done: std::collections::HashSet<i64> = match existing.split_first() {
+        Some(((_, first), rest)) => first
+            .iter()
+            .copied()
+            .filter(|u| rest.iter().all(|(_, s)| s.contains(u)))
+            .collect(),
+        None => std::collections::HashSet::new(),
+    };
+    let todo: Vec<i64> = users.into_iter().filter(|u| !done.contains(u)).collect();
+
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(cfg.num_processes)
+        .build()
+        .map_err(|e| e.to_string())?;
+    let t_start = Instant::now();
+    let results: Vec<Vec<Value>> = pool.install(|| {
+        todo.par_iter()
+            .map(|&user| match sweep_user(cfg, user, hdbscan) {
+                Ok(v) => v,
+                Err(e) => {
+                    eprintln!("User {user}: {e}");
+                    Vec::new()
+                }
+            })
+            .collect()
+    });
+    let makespan = t_start.elapsed().as_secs_f64();
+
+    let mut per_exp: Vec<Vec<Value>> = existing.into_iter().map(|(v, _)| v).collect();
+    let mut new_users = 0usize;
+    for user_vals in results {
+        if user_vals.len() == n_exp {
+            new_users += 1;
+            for (i, v) in user_vals.into_iter().enumerate() {
+                per_exp[i].push(v);
+            }
+        }
+    }
+    for (path, vals) in paths.iter().zip(per_exp) {
+        write_sorted(path, vals)?;
+    }
+    eprintln!(
+        "sweep: {} experiments, {} new users -> result/{}-smart-*.jsonl (makespan {:.1}s, {} workers)",
+        n_exp, new_users, base, makespan, cfg.num_processes
+    );
+    Ok(())
+}
+
+/// Process one user through a whole sweep matrix → one result Value per experiment (matrix order).
+fn sweep_user(cfg: &Config, user_id: i64, hdbscan: bool) -> Result<Vec<Value>, String> {
+    let t0 = Instant::now();
+    let raw = read_user_revlogs(&cfg.data_path, user_id)?;
+    let mut ds = create_features(&raw, cfg)?;
+    if ds.len() < 6 {
+        return Err(format!("{user_id} does not have enough data."));
+    }
+    // smart clusters decks → use the deck partition map (missing cards ⇒ -1).
+    let map = read_user_partition_map(&cfg.data_path, user_id, "deck")?;
+    for r in &mut ds.rows {
+        r.partition = *map.get(&r.card_id).unwrap_or(&-1);
+    }
+    let prep_s = t0.elapsed().as_secs_f64();
+
+    let outs = if hdbscan {
+        crate::models::fsrs_v7::process_hdbscan_sweep(&ds, cfg)
+    } else {
+        crate::models::fsrs_v7::process_smart_sweep(&ds, cfg)
+    };
+    let prep_share = prep_s / outs.len().max(1) as f64;
+    let mut vals = Vec::with_capacity(outs.len());
+    for (out, time_s) in outs {
+        vals.push(evaluate(&out.eval_rows, &out.p, cfg, user_id, out.params, prep_share + time_s));
+    }
+    Ok(vals)
 }

@@ -218,7 +218,9 @@ bit-for-bit.*
 ## Options
 
 All flags match the Python `script.py`
-([upstream docs](https://github.com/open-spaced-repetition/srs-benchmark#scriptpy-options)).
+([upstream docs](https://github.com/open-spaced-repetition/srs-benchmark#scriptpy-options)),
+except the smart-preset flags (`--partitions smart`, `--cluster_method`, `--cluster_threshold`,
+`--cluster_sweep`), which are a Rust-only extension (see [Smart presets](#smart-presets) below).
 
 | Flag | Description | Default |
 | --- | --- | --- |
@@ -233,7 +235,10 @@ All flags match the Python `script.py`
 | `--S0` | FSRS-5/6: optimize only the initial-stability parameters. | off |
 | `--sched_penalties` | FSRS-7 scheduling penalties (penalty 1 & 2). | off |
 | `--two_buttons` | Treat Hard and Easy as Good (rating remap). | off |
-| `--partitions` | Train per partition: `none`, `deck`, or `preset`. | `none` |
+| `--partitions` | Train per partition: `none`, `deck`, `preset`, or `smart`. | `none` |
+| `--cluster_method` | Smart-preset clustering: `single`/`complete`/`average`/`centroid`/`ward`, or `hdbscan` (with `--partitions smart`; `hdbscan` requires `--cluster_sweep`). | `ward` |
+| `--cluster_threshold` | Smart-preset Mahalanobis cut threshold (with `--partitions smart`). | `12.0` |
+| `--cluster_sweep` | Run all 30 smart-preset experiments in one pass (shares per-deck training). | off |
 | `--n_splits` | Number of `TimeSeriesSplit` folds. | `5` |
 | `--batch_size` | Training batch size. | `512` |
 | `--max_seq_len` | Max sequence length for batching (also caps reviews/card at `2×`). | `64` |
@@ -252,6 +257,48 @@ All flags match the Python `script.py`
 
 The output filename is derived from the flags exactly as in Python — e.g.
 `--algo FSRS-6 --short --secs` → `result/FSRS-6-short-secs.jsonl`.
+
+## Smart presets
+
+`--partitions smart` (FSRS-7 only) groups a user's decks into *data-driven* presets by the similarity
+of their trained FSRS-7 parameters, instead of training one model per deck (`--partitions deck`) or
+using the user's hand-made presets (`--partitions preset`). Per `TimeSeriesSplit` fold it: (1) trains
+per-deck params (the deck path, incl. its double-fallback), (2) log-transforms params 0–3, whitens by
+a robust covariance so Euclidean distance = Mahalanobis distance, and clusters the decks
+(`src/cluster.rs`, hierarchical linkage via the `kodama` crate + a SciPy-compatible
+`fcluster(criterion="distance")`), (3) re-trains one param set per cluster, (4) predicts each test row
+with its deck's cluster params (a deck unseen in training goes to the nearest cluster). The eval
+row-set is identical to the non-partitioned run, so `size` matches `FSRS-7-short-secs`.
+
+**Prerequisite — fit the covariance once** (from FSRS-7 `--short --secs --recency` over all 10k users):
+
+```
+target\release\script.exe --algo FSRS-7 --short --secs --recency --processes N   # generate the params
+python _smart\fit_covariance.py                                                  # -> _smart/smart_preset_cov.json
+```
+
+Then run one experiment, or the whole matrix at once (5 linkages × 6 thresholds, sharing the per-deck
+training — ~2.6× faster than 30 separate runs):
+
+```
+target\release\script.exe --algo FSRS-7 --short --secs --partitions smart --cluster_method ward --cluster_threshold 12
+target\release\script.exe --algo FSRS-7 --short --secs --partitions smart --cluster_sweep   # all 30 hierarchical
+```
+
+There is also an **HDBSCAN** density-clustering sweep (16 experiments = min_cluster_size {2,5,10,20} ×
+min_samples {1,5} × cluster_selection_method {eom,leaf}; `allow_single_cluster`, noise→nearest):
+
+```
+target\release\script.exe --algo FSRS-7 --short --secs --partitions smart --cluster_method hdbscan --cluster_sweep
+```
+
+(`cluster_selection_epsilon` is *not* a useful knob here — at the whitened-Mahalanobis distance scale
+it never merges, and sklearn crashes for large eps — so the sweep varies min_cluster_size/min_samples/
+method instead.) Each experiment writes `result/FSRS-7-short-secs-smart-<suffix>.jsonl`. Aggregate all
+of them vs the baseline with `python _smart/sweep_report.py`. The hierarchical clustering reproduces
+SciPy exactly and HDBSCAN reproduces sklearn (both unit-tested in `src/cluster.rs` / `src/hdbscan.rs`;
+HDBSCAN matches except an unreplicable numpy-argsort tie-break on `min_samples>1`+`leaf`). The
+covariance recipe mirrors `_smart/fit_covariance.py`.
 
 ## Performance
 

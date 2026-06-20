@@ -1,15 +1,18 @@
 //! Rust port of srs-benchmark `script.py`.
 
 mod autodiff;
+mod cluster;
 mod config;
 mod data;
 mod eval;
 mod features;
+mod hdbscan;
 mod metrics;
 mod models;
 #[cfg(feature = "neural")]
 mod neural;
 mod run;
+mod smart;
 mod split;
 mod train;
 

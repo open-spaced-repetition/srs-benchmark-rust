@@ -410,6 +410,39 @@ Champion binary at end of batch: `target/release/script_p3_iter10.exe`; frozen-b
   FSRS-6-one-step (hand-derived single-transition grad already). Cumulative on FSRS-6 training:
   iter1 ×2.17 × iter2 ×1.60 ≈ **×3.5**.
 
+### Smart presets (`--partitions smart`, FSRS-7 only) — 2026-06-20
+
+Data-driven presets: cluster a user's decks by FSRS-7 param similarity (Mahalanobis), train one set
+per cluster. NOT an upstream feature — a Rust-only extension Andrew is researching (37-experiment
+matrix in `Smart Preset Assignment.xlsx`; spec = `…/PythonProject/FSRS smart preset assignment
+(simple).py`). Pipeline per `TimeSeriesSplit` fold: per-deck train (the verified deck path) → whiten
+(log params 0–3, `(x−center)@W.T`) → cluster → per-cluster train → predict (test-only deck → nearest
+cluster to the user's global params). Eval row-set == non-partitioned ⇒ `size` matches
+`FSRS-7-short-secs` (the baseline, "exp 0").
+- **Covariance** (`_smart/fit_covariance.py` → `_smart/smart_preset_cov.json`): `MinCovDet(random_
+  state=43)` on the **FSRS-7 `--short --secs --recency` global params of all 10k users**, `precision=
+  pinv(cov)`, `whitening=diag(√eigvals)@eigvecs.T`, NO shrinkage. Loaded once in `run.rs` (`src/smart.rs`).
+- **Clustering** (`src/cluster.rs`): `kodama` crate linkage (single/complete/average/centroid/ward) +
+  a hand-written SciPy-compatible `fcluster(criterion="distance")` (monotone max-dist cut + union-find).
+  Unit-tested to match SciPy exactly.
+- **HDBSCAN** (`src/hdbscan.rs`, `--cluster_method hdbscan --cluster_sweep`, 16 experiments =
+  min_cluster_size{2,5,10,20} × min_samples{1,5} × {eom,leaf}): core dist (incl-self[ms-1]) →
+  mutual-reach → sklearn's exact Prim's MST + union-find single-linkage → condense → stability →
+  EOM/leaf → labels (incl. the single-root λ-threshold). Matches sklearn 31/32 fixture cases; the 1
+  diff (ms5+leaf) is numpy's unstable-argsort tie order (unreplicable, not a bug). **eps is NOT a
+  useful knob** (inert at the whitened-distance scale; sklearn crashes for large eps) — hence the
+  mcs/ms/method sweep. noise→nearest reassigns HDBSCAN noise decks (prototype's NOISE_HANDLING).
+- **Model** (`models/fsrs_v7.rs`): `process_smart` (one experiment) + `process_smart_sweep` (all 30,
+  sharing per-deck training — ~2.6× faster than 30 single runs; `--cluster_sweep`, dispatched by
+  `run.rs::run_smart_sweep`). Reuses the extracted `train_partition_weights` (deck double-fallback).
+- **Verified:** clustering == SciPy; whiten = Mahalanobis (self-consistent to 2e-9); reduces to
+  baseline at 1 cluster (LogLoss identical); sweep == single (byte-identical); `size` exact.
+- **Flags:** `--partitions smart`, `--cluster_method`, `--cluster_threshold`, `--cluster_sweep`.
+  Output: `result/FSRS-7-short-secs-smart-<method>-<threshold>.jsonl`. Report: `_smart/sweep_report.py`.
+- **Partition bug fixes (shared by deck/preset too, 2026-06-20):** missing-`cards`-row card → partition
+  **-1** (Python `fillna(-1)`), not 0 (would collide with real deck 0); a user with NO `cards/` dir →
+  empty map ⇒ all -1 (matches Python's empty-merge fallback — was erroring/skipping the user).
+
 ## 7. Conventions
 
 - **One model per file** under `src/models/` (mirrors the Python `models/` layout): each

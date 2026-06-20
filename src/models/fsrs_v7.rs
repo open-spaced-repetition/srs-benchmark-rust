@@ -318,6 +318,9 @@ pub fn process(ds: &Dataset, cfg: &Config) -> ModelOutput {
     let rows = &ds.rows;
     let tc = train_config();
 
+    if cfg.partitions == "smart" {
+        return process_smart(ds, cfg, &tc);
+    }
     if cfg.partitions != "none" {
         return process_partitioned(ds, cfg, &tc);
     }
@@ -359,10 +362,54 @@ pub fn process(ds: &Dataset, cfg: &Config) -> ModelOutput {
     ModelOutput { eval_rows, p, params: Params::Partitioned(vec![("0".to_string(), last_w)]) }
 }
 
-/// `--partitions deck|preset`: train separate weights per partition, predict each partition's
-/// test rows with its own weights (INIT_W if the partition has no train data).
-fn process_partitioned(ds: &Dataset, cfg: &Config, tc: &TrainConfig) -> ModelOutput {
+/// A train set is "adequate" iff at least one row survives FSRS-7's training filter (`pos`
+/// within `max_seq_len`; FSRS-7's `filter_training_data` is a no-op, so this is the only drop).
+fn adequate(set: &[Row], max_seq: usize) -> bool {
+    set.iter().any(|r| (r.pos as usize) <= max_seq)
+}
+
+/// Train one weight vector per partition present in `train` — the per-deck step shared by
+/// `--partitions deck` and `--partitions smart`. Applies `script.py`'s **double fallback**: a
+/// partition whose training data is "inadequate" (empty after dropping rows with
+/// `pos > max_seq_len`) falls back to **user-level weights** (trained on the whole split,
+/// computed lazily), then to INIT_W. Returns the sorted partition ids, their weights, and the
+/// user-level weights if they were computed (`None` if no partition needed them, the whole split
+/// is inadequate, or `--default`).
+fn train_partition_weights(
+    ds: &Dataset,
+    train: &[Row],
+    cfg: &Config,
+    tc: &TrainConfig,
+) -> (Vec<i64>, std::collections::HashMap<i64, Vec<f64>>, Option<Vec<f64>>) {
     use std::collections::HashMap;
+    let max_seq = cfg.max_seq_len;
+    let mut parts: Vec<i64> = train.iter().map(|r| r.partition).collect();
+    parts.sort_unstable();
+    parts.dedup();
+    // `Some(None)` = full split inadequate → defaults; `Some(Some(w))` = trained user-level.
+    let mut user_level: Option<Option<Vec<f64>>> = None;
+    let mut pw: HashMap<i64, Vec<f64>> = HashMap::new();
+    for &pt in &parts {
+        let train_p: Vec<Row> = train.iter().filter(|r| r.partition == pt).cloned().collect();
+        let w = if cfg.default_params {
+            // --default never trains (Python returns INIT_W before any inadequate check).
+            INIT_W.to_vec()
+        } else if adequate(&train_p, max_seq) {
+            train_weights(ds, &train_p, cfg, tc)
+        } else {
+            if user_level.is_none() {
+                user_level = Some(adequate(train, max_seq).then(|| train_weights(ds, train, cfg, tc)));
+            }
+            user_level.as_ref().unwrap().clone().unwrap_or_else(|| INIT_W.to_vec())
+        };
+        pw.insert(pt, w);
+    }
+    (parts, pw, user_level.flatten())
+}
+
+/// `--partitions deck|preset`: train separate weights per partition, predict each partition's
+/// test rows with its own weights (with the double-fallback in `train_partition_weights`).
+fn process_partitioned(ds: &Dataset, cfg: &Config, tc: &TrainConfig) -> ModelOutput {
     let rows = &ds.rows;
     let splits = time_series_split(rows.len(), cfg.n_splits);
     let mut eval_rows = Vec::new();
@@ -372,15 +419,7 @@ fn process_partitioned(ds: &Dataset, cfg: &Config, tc: &TrainConfig) -> ModelOut
     for s in splits {
         let train = &rows[..s.test_start];
         let test = &rows[s.test_start..s.test_end];
-
-        let mut parts: Vec<i64> = train.iter().map(|r| r.partition).collect();
-        parts.sort_unstable();
-        parts.dedup();
-        let mut pw: HashMap<i64, Vec<f64>> = HashMap::new();
-        for &pt in &parts {
-            let train_p: Vec<Row> = train.iter().filter(|r| r.partition == pt).cloned().collect();
-            pw.insert(pt, train_weights(ds, &train_p, cfg, tc));
-        }
+        let (parts, pw, _ul) = train_partition_weights(ds, train, cfg, tc);
 
         let mut tparts: Vec<i64> = test.iter().map(|r| r.partition).collect();
         tparts.sort_unstable();
@@ -399,6 +438,287 @@ fn process_partitioned(ds: &Dataset, cfg: &Config, tc: &TrainConfig) -> ModelOut
     }
 
     ModelOutput { eval_rows, p, params: Params::Partitioned(last_pw) }
+}
+
+/// Method-independent per-split state for smart-preset assignment, computed ONCE and reused across
+/// every clustering experiment in a sweep: the trained per-deck params, their whitened vectors, and
+/// the user's global params (for test-only-deck / inadequate-cluster fallback).
+struct DeckSplit {
+    deck_ids: Vec<i64>,
+    points: Vec<Vec<f64>>,
+    global_w: Option<Vec<f64>>,
+}
+
+/// Train per-deck params for one split and whiten them — the expensive step shared by all
+/// clustering experiments (step 4). `global_w` is the user-level params for test-only-deck /
+/// inadequate-cluster fallback: reuse the deck step's if it produced one, else train it only when
+/// the split actually has a test-only deck.
+fn compute_deck_split(
+    ds: &Dataset,
+    cfg: &Config,
+    tc: &TrainConfig,
+    cov: &crate::smart::Cov,
+    train: &[Row],
+    test: &[Row],
+) -> DeckSplit {
+    use std::collections::HashSet;
+    let (deck_ids, deck_w, ul) = train_partition_weights(ds, train, cfg, tc);
+    let points: Vec<Vec<f64>> = deck_ids.iter().map(|d| cov.whiten(&deck_w[d])).collect();
+    let deck_set: HashSet<i64> = deck_ids.iter().copied().collect();
+    let has_test_only = test.iter().any(|r| !deck_set.contains(&r.partition));
+    let global_w = ul.or_else(|| {
+        if has_test_only && !cfg.default_params && adequate(train, cfg.max_seq_len) {
+            Some(train_weights(ds, train, cfg, tc))
+        } else {
+            None
+        }
+    });
+    DeckSplit { deck_ids, points, global_w }
+}
+
+/// A single clustering experiment's spec: hierarchical linkage (method, threshold) or HDBSCAN
+/// (min_cluster_size, min_samples, leaf-vs-eom). Produced by the sweep matrices below.
+#[derive(Clone, Copy)]
+enum SmartCluster {
+    Hier(crate::cluster::Method, f64),
+    Hdbscan { mcs: usize, ms: usize, leaf: bool },
+}
+
+/// Partition the (whitened) deck vectors per the spec → one 0-based cluster label per deck. HDBSCAN
+/// noise decks are reassigned to the nearest cluster (the prototype's NOISE_HANDLING="nearest").
+fn cluster_decks(points: &[Vec<f64>], spec: &SmartCluster) -> Vec<usize> {
+    match spec {
+        SmartCluster::Hier(method, threshold) => {
+            crate::cluster::fcluster_distance(points, *method, *threshold)
+        }
+        SmartCluster::Hdbscan { mcs, ms, leaf } => {
+            let raw = crate::hdbscan::hdbscan(points, *mcs, *ms, *leaf);
+            crate::hdbscan::noise_to_nearest(points, &raw)
+        }
+    }
+}
+
+/// One clustering experiment on a precomputed [`DeckSplit`]: cluster decks, train one param set per
+/// cluster ("smart preset"), predict this split's test rows (appending to `eval_rows`/`p`). A deck
+/// with test rows but no train rows that split is assigned to the cluster nearest (whitened) to the
+/// user's global params. Returns this split's per-cluster params (`{cluster: weights}`).
+fn smart_predict_split(
+    ds: &Dataset,
+    cfg: &Config,
+    tc: &TrainConfig,
+    cov: &crate::smart::Cov,
+    d: &DeckSplit,
+    train: &[Row],
+    test: &[Row],
+    spec: &SmartCluster,
+    eval_rows: &mut Vec<Row>,
+    p: &mut Vec<f64>,
+) -> Vec<(String, Vec<f64>)> {
+    use std::collections::HashMap;
+    let max_seq = cfg.max_seq_len;
+    let init_w = INIT_W.to_vec();
+
+    let labels = cluster_decks(&d.points, spec);
+    let nclusters = labels.iter().copied().max().map(|m| m + 1).unwrap_or(0);
+    let deck2cluster: HashMap<i64, usize> =
+        d.deck_ids.iter().zip(&labels).map(|(&id, &l)| (id, l)).collect();
+
+    // Cluster centroids in whitened space (for nearest-cluster assignment of test-only decks).
+    let dim = cov.dim();
+    let mut centroids = vec![vec![0.0f64; dim]; nclusters];
+    let mut counts = vec![0usize; nclusters];
+    for (i, &c) in labels.iter().enumerate() {
+        for k in 0..dim {
+            centroids[c][k] += d.points[i][k];
+        }
+        counts[c] += 1;
+    }
+    for c in 0..nclusters {
+        let n = counts[c].max(1) as f64;
+        for k in 0..dim {
+            centroids[c][k] /= n;
+        }
+    }
+
+    // Per-cluster training. Group train rows by their deck's cluster; an inadequate cluster falls
+    // back to the user's global params, then INIT_W.
+    let mut cluster_rows: Vec<Vec<Row>> = vec![Vec::new(); nclusters];
+    for r in train {
+        if let Some(&c) = deck2cluster.get(&r.partition) {
+            cluster_rows[c].push(r.clone());
+        }
+    }
+    let cluster_w: Vec<Vec<f64>> = cluster_rows
+        .iter()
+        .map(|crows| {
+            if cfg.default_params {
+                init_w.clone()
+            } else if adequate(crows, max_seq) {
+                train_weights(ds, crows, cfg, tc)
+            } else {
+                d.global_w.clone().unwrap_or_else(|| init_w.clone())
+            }
+        })
+        .collect();
+
+    // Nearest cluster to the user's global params — the home for test-only decks.
+    let nearest_c: Option<usize> = d.global_w.as_ref().filter(|_| nclusters > 0).map(|gw| {
+        let z = cov.whiten(gw);
+        (0..nclusters)
+            .min_by(|&a, &b| sq_dist(&z, &centroids[a]).total_cmp(&sq_dist(&z, &centroids[b])))
+            .unwrap()
+    });
+
+    // Predict: group test rows by assigned cluster (sentinel `nclusters` = INIT_W).
+    let mut groups: HashMap<usize, Vec<Row>> = HashMap::new();
+    for r in test {
+        let c = match deck2cluster.get(&r.partition) {
+            Some(&c) => c,
+            None => nearest_c.unwrap_or(nclusters),
+        };
+        groups.entry(c).or_default().push(r.clone());
+    }
+    let mut keys: Vec<usize> = groups.keys().copied().collect();
+    keys.sort_unstable();
+    for c in keys {
+        let group = &groups[&c];
+        let w = if c < nclusters { &cluster_w[c] } else { &init_w };
+        let tm = Model::build(ds, group, &vec![1.0; group.len()], None, cfg);
+        let all: Vec<usize> = (0..tm.rows.len()).collect();
+        for (i, pr) in tm.predict(w, &all).into_iter().enumerate() {
+            eval_rows.push(tm.rows[i].clone());
+            p.push(pr);
+        }
+    }
+    (0..nclusters).map(|c| (c.to_string(), cluster_w[c].clone())).collect()
+}
+
+/// `--partitions smart`: smart-preset assignment for one (method, threshold). Eval row-set == the
+/// non-partitioned run ⇒ `size` matches.
+fn process_smart(ds: &Dataset, cfg: &Config, tc: &TrainConfig) -> ModelOutput {
+    let rows = &ds.rows;
+    let splits = time_series_split(rows.len(), cfg.n_splits);
+    let cov = crate::smart::global();
+    let method =
+        crate::cluster::Method::parse(&cfg.cluster_method).unwrap_or(crate::cluster::Method::Ward);
+    let spec = SmartCluster::Hier(method, cfg.cluster_threshold);
+
+    let mut eval_rows = Vec::new();
+    let mut p = Vec::new();
+    let mut last_pw: Vec<(String, Vec<f64>)> = Vec::new();
+    for s in splits {
+        let train = &rows[..s.test_start];
+        let test = &rows[s.test_start..s.test_end];
+        let d = compute_deck_split(ds, cfg, tc, cov, train, test);
+        last_pw = smart_predict_split(ds, cfg, tc, cov, &d, train, test, &spec, &mut eval_rows, &mut p);
+    }
+    ModelOutput { eval_rows, p, params: Params::Partitioned(last_pw) }
+}
+
+/// Hierarchical sweep matrix (xlsx exps 1-30): 5 linkages × 6 thresholds, method outer.
+const SWEEP_METHODS: [(&str, crate::cluster::Method); 5] = [
+    ("single", crate::cluster::Method::Single),
+    ("complete", crate::cluster::Method::Complete),
+    ("average", crate::cluster::Method::Average),
+    ("centroid", crate::cluster::Method::Centroid),
+    ("ward", crate::cluster::Method::Ward),
+];
+const SWEEP_THRESHOLDS: [f64; 6] = [1.5, 2.0, 3.0, 5.0, 7.5, 12.0];
+
+/// HDBSCAN sweep matrix (16 experiments): min_cluster_size × min_samples × {eom, leaf}.
+const HDBSCAN_MCS: [usize; 4] = [2, 5, 10, 20];
+const HDBSCAN_MS: [usize; 2] = [1, 5];
+
+/// Filename suffixes for the hierarchical sweep, in run order (`<method>-<threshold>`).
+pub fn hier_sweep_suffixes() -> Vec<String> {
+    let mut v = Vec::new();
+    for (mname, _) in SWEEP_METHODS {
+        for &t in &SWEEP_THRESHOLDS {
+            v.push(format!("{mname}-{}", crate::config::fmt_threshold(t)));
+        }
+    }
+    v
+}
+
+/// Filename suffixes for the HDBSCAN sweep, in run order (`hdbscan-mcs<M>-ms<S>-<eom|leaf>`).
+pub fn hdbscan_sweep_suffixes() -> Vec<String> {
+    let mut v = Vec::new();
+    for mcs in HDBSCAN_MCS {
+        for ms in HDBSCAN_MS {
+            for leaf in [false, true] {
+                v.push(format!("hdbscan-mcs{mcs}-ms{ms}-{}", if leaf { "leaf" } else { "eom" }));
+            }
+        }
+    }
+    v
+}
+
+/// Run a list of clustering experiments for one user, sharing the per-deck training across them.
+/// Returns `(ModelOutput, time_s)` per spec in input order; `time_s` attributes the shared deck
+/// cost evenly across the experiments.
+fn sweep_specs(ds: &Dataset, cfg: &Config, specs: &[SmartCluster]) -> Vec<(ModelOutput, f64)> {
+    use std::time::Instant;
+    let rows = &ds.rows;
+    let splits = time_series_split(rows.len(), cfg.n_splits);
+    let cov = crate::smart::global();
+    let tc = &train_config();
+
+    // Shared per-deck training for every split (the expensive step), timed once.
+    let t_deck = Instant::now();
+    let dsplits: Vec<(usize, usize, DeckSplit)> = splits
+        .iter()
+        .map(|s| {
+            let train = &rows[..s.test_start];
+            let test = &rows[s.test_start..s.test_end];
+            (s.test_start, s.test_end, compute_deck_split(ds, cfg, tc, cov, train, test))
+        })
+        .collect();
+    let deck_share = t_deck.elapsed().as_secs_f64() / specs.len().max(1) as f64;
+
+    specs
+        .iter()
+        .map(|spec| {
+            let t0 = Instant::now();
+            let mut eval_rows = Vec::new();
+            let mut p = Vec::new();
+            let mut last_pw: Vec<(String, Vec<f64>)> = Vec::new();
+            for (ts, te, d) in &dsplits {
+                let train = &rows[..*ts];
+                let test = &rows[*ts..*te];
+                last_pw = smart_predict_split(ds, cfg, tc, cov, d, train, test, spec, &mut eval_rows, &mut p);
+            }
+            let time_s = deck_share + t0.elapsed().as_secs_f64();
+            (ModelOutput { eval_rows, p, params: Params::Partitioned(last_pw) }, time_s)
+        })
+        .collect()
+}
+
+/// `--partitions smart --cluster_sweep`: the 30 hierarchical experiments (xlsx order), sharing
+/// per-deck training.
+pub fn process_smart_sweep(ds: &Dataset, cfg: &Config) -> Vec<(ModelOutput, f64)> {
+    let specs: Vec<SmartCluster> = SWEEP_METHODS
+        .iter()
+        .flat_map(|&(_, m)| SWEEP_THRESHOLDS.iter().map(move |&t| SmartCluster::Hier(m, t)))
+        .collect();
+    sweep_specs(ds, cfg, &specs)
+}
+
+/// `--partitions smart --cluster_method hdbscan --cluster_sweep`: the 16 HDBSCAN experiments.
+pub fn process_hdbscan_sweep(ds: &Dataset, cfg: &Config) -> Vec<(ModelOutput, f64)> {
+    let mut specs = Vec::new();
+    for mcs in HDBSCAN_MCS {
+        for ms in HDBSCAN_MS {
+            for leaf in [false, true] {
+                specs.push(SmartCluster::Hdbscan { mcs, ms, leaf });
+            }
+        }
+    }
+    sweep_specs(ds, cfg, &specs)
+}
+
+#[inline]
+fn sq_dist(a: &[f64], b: &[f64]) -> f64 {
+    a.iter().zip(b).map(|(x, y)| (x - y) * (x - y)).sum()
 }
 
 #[cfg(test)]

@@ -2654,6 +2654,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e2db585e1d738fc771bf08a151420d3ed193d9d895a36df7f6f8a9456b911ddc"
 
 [[package]]
+name = "kodama"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f868feceed4703c842925c14232667c5f29c8059d0354154b2d06ec3bf9daf82"
+
+[[package]]
 name = "kstat-rs"
 version = "0.2.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4004,6 +4010,7 @@ dependencies = [
  "candle-nn",
  "clap",
  "fsrs",
+ "kodama",
  "parquet",
  "rayon",
  "serde",

@@ -16,6 +16,11 @@ Cargo.lock.orig
 *.swp
 .DS_Store
 Thumbs.db
+~$*
+
+# Smart-preset sweep scratch (detached-run logs); keep scripts + _smart/results/
+_smart/*.log
+_smart/*.err
 
 # Python (kept model defs are tracked explicitly; ignore caches/venv)
 __pycache__/
