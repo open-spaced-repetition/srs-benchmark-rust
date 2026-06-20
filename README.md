@@ -253,6 +253,18 @@ All flags match the Python `script.py`
 The output filename is derived from the flags exactly as in Python — e.g.
 `--algo FSRS-6 --short --secs` → `result/FSRS-6-short-secs.jsonl`.
 
+## Performance
+
+Each trained algorithm is optimized to keep the benchmark fast while reproducing results within the
+±0.0005 tolerance above. The trained-model gradients are computed by **hand-written reverse-mode
+analytic gradients** rather than generic autodiff — these are manual VJPs of each model's specific
+forward pass (⚠ changing a model's math requires re-deriving its backward; the `--features fp64`
+oracle tests guard this). Models with hand-written gradients: **FSRS-7** (+ `f32x8` SIMD) and **FSRS
+v1–v6 / FSRS-4.5 / SM2-trainable / DASH[ACT-R]** (f64). The speedup work is logged iteration-by-
+iteration in `_phase2/iterations.md` (FSRS-7) and `_phase3/iterations.md` (the rest), each gated on a
+Wilcoxon signed-rank timing test (p < 0.01) and a per-algo correctness band. ACT-R and Anki remain on
+forward-mode autodiff (a VJP wasn't a net win for them).
+
 ## Status
 
 Work in progress — see `CLAUDE.md` for the architecture, phase plan, and current status.

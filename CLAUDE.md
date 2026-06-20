@@ -379,19 +379,36 @@ factors/p-values in `_phase2/iterations.md`):**
   `f64x4` champion (p = 7.181e-35). **Supersedes the `f64x4` SIMD of iter 3.** (iters 4–7 were the
   precision-investigation scratch runs; see `_phase2/iterations.md`.)
 
-### Phase 3 — speed up the OTHER (forward-mode-`Dual`) algos (2026-06-20, ongoing)
+### Phase 3 — speed up the OTHER (forward-mode-`Dual`) algos (2026-06-20)
 
-Generalizes Phase-2 to the slow non-FSRS-7 algos: FSRS v1–v6, FSRS-4.5, FSRS-6-one-step, ACT-R,
-Anki, DASH[ACT-R], SM2-trainable (all forward-mode `Dual<P>` ⇒ ~P× the value pass per op). Same
-protocol as Phase-2 (200 users, simultaneous before/after 1-thread-each, Wilcoxon p<0.01; ±0.0005
-**per-algo** vs a FROZEN baseline; `size` exact; still match upstream). Log + frozen baselines live
-in `_phase3/` (`iterations.md`, `baseline/`); reuses the `_phase2/` harness. Champion binary:
-`target/release/script_p3_iter1.exe`; frozen-baseline binary `script_p3base.exe`.
+Generalizes Phase-2 to the slow non-FSRS-7 algos (all forward-mode `Dual<P>` ⇒ ~P× the value pass
+per op). Same protocol as Phase-2 (200 users, simultaneous before/after 1-thread-each, Wilcoxon
+p<0.01; ±0.0005 **per-algo** vs a FROZEN baseline; `size` exact; still match upstream). Full log +
+frozen baselines in `_phase3/` (`iterations.md`, `baseline/`); reuses the `_phase2/` harness.
+Champion binary at end of batch: `target/release/script_p3_iter10.exe`; frozen-baseline binary
+`script_p3base.exe`.
+
 - **iter 1 (ACCEPT, bit-identical)** — stripped `round_scalar` from the `Dual<P>` ops
   (`src/autodiff.rs`). `Dual` is f64-only in production, so the per-element rounding was a no-op;
-  removing it un-blocks auto-vectorization of the const-`P` gradient loops. Speeds up EVERY
-  forward-mode-`Dual` algo at once, scaling with P: FSRS-6 --short --secs **×2.17** (p=7.181e-35),
-  SM2-trainable ×1.44, ACT-R ×1.21 (ACT-R is value-dominated by its O(reviews²) sum — a later iter).
+  removing it un-blocks auto-vectorization of the const-`P` gradient loops. Helps EVERY
+  forward-mode-`Dual` algo at once, scaling with P: FSRS-6 ×2.17, SM2 ×1.44, ACT-R ×1.21.
+- **iters 2–10 (ACCEPT) — hand-written reverse-mode VJPs** replacing forward-mode `Dual<P>` in
+  `Model::grad` (predict keeps `Dual<0>`; `retention` → `retention_dual` = the gradient oracle), one
+  `src/models/<m>_grad.rs` per model, f64, each finite-diff/oracle unit-tested (`--features fp64`):
+  FSRS-6 ×1.60, FSRS-5 ×1.30, FSRS-4.5 ×1.38, FSRS-4 ×1.33, FSRS-3 ×1.27, FSRS-2 ×1.33, FSRS-1 ×1.12,
+  SM2-trainable ×1.07, DASH[ACT-R] ×1.19 (the last is a **closed-form** analytic grad — DASH[ACT-R]
+  is a static sum, not a recurrence). All within ±0.0005 (mostly ≈0), `size` exact, match upstream.
+  Reverse-mode and forward-mode compute the same f64 derivative (differ ~1e-15 in summation order),
+  so LogLoss barely moves. **⚠ These are MANUAL VJPs of specific forwards — changing a model's
+  formulas requires re-deriving its backward** (the fp64 oracle tests guard this).
+- **iter 11 (REJECT) — Anki** reverse-mode VJP was correct (oracle <1e-6, bit-identical) but **×0.97
+  (slower)** than the vectorized `Dual<7>` — at low NP with heavy `max`/`leaky_relu`/branch routing,
+  the VJP's per-step cache costs more than the short forward-mode P-loop. Reverted; Anki stays
+  forward-mode.
+- **STILL forward-mode `Dual`:** Anki (reject above), ACT-R (its real cost is the O(reviews²)
+  all-pairs activation *value* sum, which a VJP doesn't fix — a separate algorithmic task),
+  FSRS-6-one-step (hand-derived single-transition grad already). Cumulative on FSRS-6 training:
+  iter1 ×2.17 × iter2 ×1.60 ≈ **×3.5**.
 
 ## 7. Conventions
 
