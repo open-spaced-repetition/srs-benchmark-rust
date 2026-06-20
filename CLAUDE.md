@@ -147,7 +147,7 @@ clamp each **log term to min −100** (torch's `binary_cross_entropy`), NOT clam
 predictions, so on chaotic models the selector accepted overfit epochs torch rejects — e.g.
 FSRSv1 plain user 541 (rust trained to worse weights / LogLoss 3.82; torch kept init / 3.35).
 Fixing the clamp made FSRSv1 plain pass (+0.000947 → +0.000445) and pulled the whole FSRS
-family's short-secs diffs from ~−0.002 toward ~0 (closer to torch). The `fp32` experiment was
+family's short-secs diffs from ~−0.002 toward ~0 (closer to torch). The f32 experiment was
 what ruled out precision and forced finding this — the divergence was structural, not f32-vs-f64.
 
 **⚠ PRECISION: PER-ALGO f32/f64 (Andrew, 2026-06-19) — supersedes the f64-everywhere note below.**
@@ -169,7 +169,7 @@ reproduces upstream"**:
 (History: a first attempt kept only the Dual *gradient* in f64 while value/Adam stayed f32 — that did
 NOT fix it (−0.019 persisted); the f32 value/Adam on the chaotic trajectory is the cause, so the
 whole algo must be f64.) Tests: `cargo test` runs f32 (ROUND_F32 default true); `cargo test --features
-fp64` adds the finite-difference math checks (gated to fp64 — h=1e-6 is meaningless in f32). *Why f32
+fp64` adds the finite-difference math checks (gated to the `fp64` feature — h=1e-6 is meaningless in f32). *Why f32
 at all:* under the two-sided
 ±0.0005 rule, f64's "better" optima on chaotic *analytic* models (`HLR --short --secs` −0.0058)
 count as FAILS (divergence from f32 upstream); f32 reproduces upstream there (→ ±0). f64 can still
@@ -351,8 +351,8 @@ verify (vs current Python, 200 users): all **size-exact** (per-user + sum); ΔLo
 (Dual&lt;34&gt; forward-mode autodiff over the 3-state recurrence) — that's the Phase-2 speedup target;
 the `--default` configs don't train (~40 s).
 
-**PHASE-2 PROGRESS (2026-06-19) — 3 iterations accepted, ≈×10.9 on training (full log in
-`_phase2/iterations.md`):**
+**PHASE-2 PROGRESS (2026-06-19) — 4 iterations accepted, ≈×20 on training (full log + per-iter
+factors/p-values in `_phase2/iterations.md`):**
 - **iter 1 — analytic reverse-mode gradient** (`models/fsrs_v7_grad.rs`): hand-written scalar VJP
   (f64 port of `fsrs-rs-speed-autoresearch/fsrs-rs/src/analytic.rs`) replaces the forward-mode
   `Dual<34>` in `Model::grad`/`predict`. Same per-prefix batching ⇒ trajectory preserved (+0.000117
@@ -360,8 +360,8 @@ the `--default` configs don't train (~40 s).
 - **iter 2 — windowed O(C) predict** (`fsrs_v7_grad::predict_card`): replay each card's sequence
   ONCE, emit a prediction per requested position (bit-identical; prediction order is
   trajectory-free). **×2.0** on `--default` configs (predict is ~80 % there; ~2.5 % of training).
-- **iter 3 — f64×4 SIMD gradient** (`models/fsrs_v7_simd.rs`): vectorize the per-prefix recurrence
-  fwd+bwd across 4 rows/lane (`wide`, AVX2), Cephes f64×4 exp/ln (~1 ulp). EXACT batching ⇒ all 5
+- **iter 3 — `f64x4` SIMD gradient** (`models/fsrs_v7_simd.rs`): vectorize the per-prefix recurrence
+  fwd+bwd across 4 rows/lane (`wide`, AVX2), Cephes `f64x4` exp/ln (~1 ulp). EXACT batching ⇒ all 5
   configs identical to scalar at 6 dp. **×2.84** training (p≈7e-35). **Build:** `RUSTFLAGS="-C
   target-cpu=native" cargo build --release` (plain build still correct, just SSE2-narrow).
 - **REJECTED by analysis — windowed O(N) *training* (card batching):** the reference repo's own
@@ -369,6 +369,12 @@ the `--default` configs don't train (~40 s).
   ±0.0015). That is &gt;our ±0.0005 AND would stop the Rust matching Python — so it stays out. (The
   windowed *gradient* is math-identical; only the batch-composition change hurts. Windowing is safe
   for predict, not training.)
+- **iter 8 — precision switch to f32** (`models/fsrs_v7_simd.rs`, `fsrs_v7_grad.rs`): FSRS-7 was made
+  an **f32** algo (Andrew, 2026-06-19, to match the official fsrs-rs), so the SIMD gradient was ported
+  **`f64x4` → `f32x8`** (8 rows/lane, hardware f32) and the scalar analytic path now rounds to f32.
+  EXACT batching preserved; 200-user LogLoss moved only ~2e-4 (well inside ±0.0005). **×1.82** vs the
+  `f64x4` champion (p = 7.181e-35). **Supersedes the `f64x4` SIMD of iter 3.** (iters 4–7 were the
+  precision-investigation scratch runs; see `_phase2/iterations.md`.)
 
 ## 7. Conventions
 
@@ -382,7 +388,7 @@ the `--default` configs don't train (~40 s).
   fails vs upstream, check it against the current source Python (`harness`/golden) before
   assuming a bug.
 - Match Python numerics closely but **bit-exactness is NOT required** (rule #5 is a ±0.0005
-  tolerance), which buys freedom on reduction order, batch-shuffle RNG, fp32-vs-fp64, etc.
+  tolerance), which buys freedom on reduction order, batch-shuffle RNG, f32-vs-f64, etc.
   Still, prefer the same math/order where cheap, to stay well inside tolerance.
 - Keep flags/filenames identical to Python (`config.rs`). When unsure of a feature detail,
   read the Python in `C:\Users\Andrew\srs-benchmark` — it is the spec.

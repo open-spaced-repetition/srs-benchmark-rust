@@ -176,7 +176,7 @@ build still reproduces Python. (The ~2e-4 is the genuine f32-vs-f64 gap, not a s
 `script_6` (before). total time_ms **218847 → 119921 = ×1.82 faster**; median per-user ratio 0.5585
 (×1.79); Wilcoxon one-sided (after<before) **p = 7.181e-35**. **ACCEPT.** The 8-wide f32 SIMD beats
 the 4-wide f64 SIMD outright (more lanes + cheaper f32 ops). Cumulative training speedup vs the
-original forward-mode baseline is now ≈ ×13 × 1.82 ≈ **×24**. New champion = `script_7.exe`.
+original forward-mode baseline is now ≈ ×10.9 × 1.82 ≈ **×20**. New champion = `script_7.exe`.
 
 **Build:** `RUSTFLAGS="-C target-cpu=native" cargo build --release` (f32×8 wants AVX/AVX2). Tests:
 `cargo test` runs the f32 path (simd-vs-scalar, analytic-vs-Dual at f32 tol); `cargo test --features

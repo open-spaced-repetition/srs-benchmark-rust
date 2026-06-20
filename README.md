@@ -23,10 +23,12 @@ RUSTFLAGS="-C target-cpu=native" cargo build --release   # binary: target/releas
 Each model's forward value/prediction, the optimizer, and the analytic (reverse-mode) gradients are
 rounded to **f32** by default, matching torch and the official Rust implementations (which the
 upstream references are generated with). This is what keeps the port faithful to those references
-under the ±0.0005 rule below. (One internal exception: the models that use *forward-mode* autodiff —
-FSRS v1–v6, ACT-R, SM2 — keep their **gradient** in f64, because torch computes gradients in
-*reverse-mode* and only the f64 forward-mode gradient faithfully proxies that; their values/optimizer
-are still f32.) Build with the optional `fp64` feature to compute everything in full f64 instead:
+under the ±0.0005 rule below. (One exception: the algorithms whose training gradient comes from
+*forward-mode* autodiff — ACT-R, Anki, DASH[ACT-R], the FSRS v1–v6 family (incl. FSRS-4.5 and
+FSRS-6-one-step), and SM2-trainable — run **entirely in f64** (value, optimizer, and gradient alike),
+because torch computes gradients in *reverse-mode* and only a fully-f64 forward-mode pass faithfully
+proxies that; an f32 forward-mode pass diverges badly on the chaotic `--secs` training trajectory.)
+Build with the optional `fp64` feature to compute everything in full f64 instead:
 
 ```bash
 cargo build --release --features fp64
@@ -95,7 +97,7 @@ criteria:
 
 > **Resolved (2026-06-19) — per-algo precision (see Build §).** The re-review concluded: the port now
 > uses **f32 for analytic/reverse-mode-gradient algos** (HLR, DASH, LogReg, FSRS-7 — matching the f32
-> upstream) and **f64 for forward-mode-`Dual` algos** (FSRS v1–v6, v4.5, ACT-R, Anki, DASH[ACT-R],
+> upstream) and **f64 for forward-mode-`Dual` algos** (FSRS v1–v6, v4.5, ACT-R, Anki, DASH[ACT-R], FSRS-6-one-step,
 > SM2-trainable — whose forward-mode gradient only proxies torch's reverse-mode faithfully in f64).
 > This **fixed `HLR --short --secs`** (−0.0058 → −0.0000) and keeps the `Dual` algos at their verified
 > f64 numbers. The handful still outside ±0.0005 are marked `⚠ genuine` below — all investigated, none
@@ -175,7 +177,7 @@ criteria:
 
 | Configuration(s) | Status |
 | --- | --- |
-| **FSRS-7** (34-param dual-stability; plain / `-default` / `-recency` × `-equalize`) | ✅ ported, **f32** (incl. an `f32x8` SIMD gradient, ~×1.8 faster than the old f64×4). Verified in-band (±0.0005, `size` exact) vs the *current* Python `result/` and the frozen baseline. No 1000-user upstream reference exists, so it isn't in the table above. `--sched_penalties` deferred. |
+| **FSRS-7** (34-param dual-stability; plain / `-default` / `-recency` × `-equalize`) | ✅ ported, **f32** (incl. an `f32x8` SIMD gradient, ~×1.8 faster than the old `f64x4`). Verified in-band (±0.0005, `size` exact) vs the *current* Python `result/` and the frozen baseline. No 1000-user upstream reference exists, so it isn't in the table above. `--sched_penalties` deferred. |
 | GRU, LSTM, RWKV, RWKV-P, NN-17, Transformer (14) | 🐍 Python path — Reptile/neural, kept in Python |
 
 ¹ The committed upstream file for this config is **stale** (predates a pipeline change), so it
