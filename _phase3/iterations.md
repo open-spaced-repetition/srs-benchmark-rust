@@ -38,7 +38,8 @@ finite-difference / forward-mode-oracle unit tests (gated to `--features fp64`) 
 |------|----------|------|
 | FSRS-7 | hand-written reverse-mode VJP (+ `f32x8` SIMD) | `src/models/fsrs_v7_grad.rs`, `fsrs_v7_simd.rs` |
 | FSRS-6 | hand-written reverse-mode VJP (f64) | `src/models/fsrs_v6_grad.rs` |
-| _(FSRS v1–v5, v4.5, ACT-R, Anki, DASH[ACT-R], SM2-trainable: still forward-mode `Dual` — candidates)_ | | |
+| FSRS-5 | hand-written reverse-mode VJP (f64) | `src/models/fsrs_v5_grad.rs` |
+| _(FSRS v1–v4, v4.5, ACT-R, Anki, DASH[ACT-R], SM2-trainable: still forward-mode `Dual` — candidates)_ | | |
 
 ## Iterations
 
@@ -46,6 +47,7 @@ finite-difference / forward-mode-oracle unit tests (gated to `--features fp64`) 
 |------|-----------|--------|---------------|----------------|---------------|--------------------|-------------------|--------------------------|------------|----------|
 | 1 | 2026-06-20 | strip `round_scalar` from `Dual<P>` ops (f64-only in production ⇒ no-op removed; un-blocks auto-vectorization of the const-`P` gradient loops) — **bit-identical** | FSRS-6 --short --secs (200u) | 0.388226 | 0.388226 | 4740.9 | 2186.8 | ×2.05 median / ×2.17 total | 7.181e-35 | **ACCEPT** |
 | 2 | 2026-06-20 | **FSRS-6** hand-written reverse-mode VJP (`fsrs_v6_grad.rs`) replaces forward-mode `Dual<21>` for the training grad; predict keeps `Dual<0>`; f64 | FSRS-6 --short --secs (200u), before=iter1 | 0.388226 | 0.388225 | 2126.1 | 1326.7 | ×1.59 median / ×1.60 total | 7.181e-35 | **ACCEPT** |
+| 3 | 2026-06-20 | **FSRS-5** hand-written reverse-mode VJP (`fsrs_v5_grad.rs`) replaces forward-mode `Dual<19>`; predict keeps `Dual<0>`; f64 | FSRS-5 --short --secs (200u), before=iter2 | 0.458876 | 0.458928 | 1416.1 | 1087.2 | ×1.27 median / ×1.30 total | 1.297e-33 | **ACCEPT** |
 
 ## Iteration details
 
@@ -94,3 +96,17 @@ finite-difference / forward-mode-oracle unit tests (gated to `--features fp64`) 
   **p = 7.181e-35**. **ACCEPT.** Cumulative vs the original forward-mode baseline: ×2.17 (iter 1) ×
   ×1.60 ≈ **×3.5** on FSRS-6 training.
 - **Champion:** `target/release/script_p3_iter2.exe`.
+
+### iter 3 — FSRS-5 hand-written reverse-mode VJP
+
+- **Change:** new `src/models/fsrs_v5_grad.rs` (FSRS-5 is FSRS-6 with a FIXED decay −0.5, no `w20`,
+  and a simpler short-term branch `s·exp(w17·(w18+rating-3))`; success/fail/difficulty/init match).
+  `fsrs_v5::Model::grad` calls it; `retention` → `retention_dual` (prediction + oracle). f64.
+- **Correctness:** `fsrs5_analytic_grad_matches_forward_mode` (fp64) checks vs the `Dual<19>` oracle
+  to <1e-6; suite green. 200-user vs FROZEN baseline: `size` exact, mean LogLoss 0.458876 → 0.458928
+  (**Δ = +0.000053**, within ±0.0005; max per-user 0.018 — one chaotic user's training trajectory
+  shifts on the ~1e-15 summation-order difference, mean unaffected). Still matches upstream
+  (FSRS-5 --short --secs ≈ +0.0001).
+- **Speed (200 users, simultaneous; before = iter-2 champion):** total time_ms **283212 → 217432 =
+  ×1.30**; median per-user 0.7901 (×1.27); Wilcoxon **p = 1.297e-33**. **ACCEPT.**
+- **Champion:** `target/release/script_p3_iter3.exe`.

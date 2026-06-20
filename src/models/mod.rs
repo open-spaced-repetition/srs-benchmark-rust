@@ -19,6 +19,7 @@ pub mod fsrs_v3;
 pub mod fsrs_v4;
 pub mod fsrs_v4dot5;
 pub mod fsrs_v5;
+pub mod fsrs_v5_grad;
 pub mod fsrs_v6;
 pub mod fsrs_v6_grad;
 pub mod fsrs_v6_one_step;

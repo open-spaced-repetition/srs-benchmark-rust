@@ -14,7 +14,7 @@ use crate::train::{self, BatchModel, TrainConfig};
 const NP: usize = 19;
 const DECAY: f64 = -0.5;
 const GAMMA: f64 = 1.0;
-const INIT_W: [f64; NP] = [
+pub const INIT_W: [f64; NP] = [
     0.40255, 1.18385, 3.173, 15.69105, 7.1949, 0.5345, 1.4604, 0.0046, 1.54575, 0.1192, 1.01925,
     1.9395, 0.11, 0.29605, 2.2698, 0.2315, 2.9898, 0.51655, 0.6621,
 ];
@@ -35,7 +35,9 @@ fn fc<const P: usize>(t: f64, s: Dual<P>) -> Dual<P> {
     Dual::<P>::c(factor() * t).div(s).add_c(1.0).powf_c(DECAY)
 }
 
-fn retention<const P: usize>(
+/// Forward-mode (`Dual<P>`) recurrence — prediction path (`Dual<0>`) + gradient oracle. The
+/// *training* gradient uses the hand-written reverse-mode VJP in [`super::fsrs_v5_grad`].
+pub fn retention_dual<const P: usize>(
     prior_dt: &[f64],
     prior_r: &[i64],
     cur_dt: f64,
@@ -125,7 +127,7 @@ impl<'a> Model<'a> {
         Model { ds, rows: out_rows, weights: out_w, init_ref, s_min: cfg.s_min, s_max: cfg.s_max }
     }
     fn ret<const P: usize>(&self, w: &[Dual<P>; NP], row: &Row) -> Dual<P> {
-        retention(self.ds.prior_dt_active(row), self.ds.prior_ratings(row), row.delta_t, w, self.s_min, self.s_max)
+        retention_dual(self.ds.prior_dt_active(row), self.ds.prior_ratings(row), row.delta_t, w, self.s_min, self.s_max)
     }
 }
 
@@ -153,16 +155,23 @@ impl BatchModel for Model<'_> {
         idx.iter().map(|&i| self.ret(&wd, &self.rows[i]).v).collect()
     }
     fn grad(&self, params: &[f64], idx: &[usize]) -> Vec<f64> {
-        let wd: [Dual<NP>; NP] = std::array::from_fn(|k| Dual::param(k, params[k]));
+        // Hand-written reverse-mode VJP (f64), ~1 fwd + 1 bwd per row vs forward-mode's ~19×.
+        let wc = super::fsrs_v5_grad::wconsts(params, self.s_min, self.s_max);
         let mut g = vec![0.0f64; NP];
+        let mut caches = Vec::new();
         for &i in idx {
-            let ret = self.ret(&wd, &self.rows[i]);
-            let p = ret.v;
-            let denom = (p * (1.0 - p)).max(1e-12);
-            let dl = self.weights[i] * (p - self.rows[i].y as f64) / denom;
-            for k in 0..NP {
-                g[k] += dl * ret.g[k];
-            }
+            let row = &self.rows[i];
+            super::fsrs_v5_grad::grad_one(
+                params,
+                self.ds.prior_dt_active(row),
+                self.ds.prior_ratings(row),
+                row.delta_t,
+                row.y as f64,
+                self.weights[i],
+                &wc,
+                &mut g,
+                &mut caches,
+            );
         }
         // L2 penalty gradient: d/dw[k] of (Σ(w-w0)²/σ² · batch · γ / N_train)
         let scale = idx.len() as f64 * GAMMA / self.rows.len() as f64;
@@ -258,11 +267,11 @@ mod tests {
         let (cur_dt, s_min, s_max) = (7.0, 0.0001, 36500.0);
         let grad = {
             let wd: [Dual<NP>; NP] = std::array::from_fn(|k| Dual::param(k, INIT_W[k]));
-            retention(&prior_dt, &prior_r, cur_dt, &wd, s_min, s_max).g
+            retention_dual(&prior_dt, &prior_r, cur_dt, &wd, s_min, s_max).g
         };
         let val = |w: [f64; NP]| {
             let wd: [Dual<0>; NP] = std::array::from_fn(|k| Dual::c(w[k]));
-            retention(&prior_dt, &prior_r, cur_dt, &wd, s_min, s_max).v
+            retention_dual(&prior_dt, &prior_r, cur_dt, &wd, s_min, s_max).v
         };
         let h = 1e-6;
         for k in 0..NP {
