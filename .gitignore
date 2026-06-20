@@ -27,7 +27,7 @@ __pycache__/
 *.pyc
 .venv/
 
-# Phase-2 scratch run dirs (timing/correctness intermediates); keep the harness + iterations.md
-/_phase2/*/
+# Speedup scratch run dirs (timing/correctness intermediates); keep the harness + iterations.md + baselines
+/_speedup/phase2/*/
 # Stray mangled-redirect logs
 C*Temp*.log

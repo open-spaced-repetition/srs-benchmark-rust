@@ -95,14 +95,6 @@ criteria:
   investigated and is a genuine f64-vs-f32 optimum / optimizer-trajectory difference, **not a bug**
   (these read lower than upstream — `(better)`); see the per-config note `⁴`.
 
-> **Resolved (2026-06-19) — per-algo precision (see Build §).** The re-review concluded: the port now
-> uses **f32 for analytic/reverse-mode-gradient algos** (HLR, DASH, LogReg, FSRS-7 — matching the f32
-> upstream) and **f64 for forward-mode-`Dual` algos** (FSRS v1–v6, v4.5, ACT-R, Anki, DASH[ACT-R], FSRS-6-one-step,
-> SM2-trainable — whose forward-mode gradient only proxies torch's reverse-mode faithfully in f64).
-> This **fixed `HLR --short --secs`** (−0.0058 → −0.0000) and keeps the `Dual` algos at their verified
-> f64 numbers. The handful still outside ±0.0005 are marked `⚠ genuine` below — all investigated, none
-> a bug (see `⁴`).
-
 ### Verified — 65 configurations
 
 | Configuration | `size` | mean LogLoss vs upstream | Status |
@@ -308,9 +300,9 @@ analytic gradients** rather than generic autodiff — these are manual VJPs of e
 forward pass (⚠ changing a model's math requires re-deriving its backward; the `--features fp64`
 oracle tests guard this). Models with hand-written gradients: **FSRS-7** (+ `f32x8` SIMD) and **FSRS
 v1–v6 / FSRS-4.5 / SM2-trainable / DASH[ACT-R]** (f64). The speedup work is logged iteration-by-
-iteration in `_phase2/iterations.md` (FSRS-7) and `_phase3/iterations.md` (the rest), each gated on a
-Wilcoxon signed-rank timing test (p < 0.01) and a per-algo correctness band. ACT-R and Anki remain on
-forward-mode autodiff (a VJP wasn't a net win for them).
+iteration in `_speedup/phase2/iterations.md` (FSRS-7) and `_speedup/phase3/iterations.md` (the rest),
+each gated on a Wilcoxon signed-rank timing test (p < 0.01) and a per-algo correctness band. ACT-R and
+Anki remain on forward-mode autodiff (a VJP wasn't a net win for them).
 
 ## Status
 

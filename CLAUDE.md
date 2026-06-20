@@ -1,462 +1,143 @@
 # srs-benchmark-rust — Claude handover
 
-> **GitHub rule (always):** every GitHub comment posted on Andrew's behalf — PR
-> descriptions, review replies, issue comments — **must start with the line
-> "Written by Claude".** No exceptions.
+> **GitHub rule (always):** every GitHub comment posted on Andrew's behalf — PR descriptions,
+> review replies, issue comments — **must start with the line "Written by Claude".** No exceptions.
 
 ## 0. What this repo is
 
-A **Rust port of `open-spaced-repetition/srs-benchmark`**, whose sole purpose is to make
-the benchmark **faster** while reproducing the same results. It commits to
-`https://github.com/open-spaced-repetition/srs-benchmark-rust` (Andrew = `Expertium`, has
-ADMIN; `gh` at `C:\Program Files\GitHub CLI\gh.exe`, logged in; git credential helper set
-via `gh auth setup-git`).
+A **Rust port of `open-spaced-repetition/srs-benchmark`** whose sole purpose is to run the same
+benchmark **faster** while reproducing its results. Commits go directly to `main` on
+`https://github.com/open-spaced-repetition/srs-benchmark-rust` (Andrew = `Expertium`, ADMIN; `gh` at
+`C:\Program Files\GitHub CLI\gh.exe`, logged in).
 
-- **Python source of truth (read-only reference):** `C:\Users\Andrew\srs-benchmark`
-  (Expertium's fork). Its own `CLAUDE.md` describes a *different* sub-project (bit-exact
-  Python speedup) owned by a *different* Claude — **not us, don't work there.** We only
-  read it as the spec.
-- Upstream repo: https://github.com/open-spaced-repetition/srs-benchmark
+- **Python source of truth (read-only spec):** `C:\Users\Andrew\srs-benchmark` (Expertium's fork).
+  Read it for any feature detail; **never write there.** Its own `CLAUDE.md` is a *different*
+  sub-project — not us.
+- Upstream: https://github.com/open-spaced-repetition/srs-benchmark
 
-## 1. The 5 rules (from Andrew)
+## 1. The rules (from Andrew)
 
-1. **Model definition files in `srs-benchmark/models/` stay in Python.** Interpreted (Andrew
-   confirmed 2026-06-07) as: keep those Python files as the canonical spec; **reimplement
-   the model math natively in Rust** for the ported algorithms. Keep the Python runtime
-   path for models we do *not* port (GRU/LSTM = Reptile, RWKV, etc.). Everything else
-   (data pipeline, harness, metrics, IO) → Rust for speed.
-2. **GRU & LSTM use the Reptile optimizer** (hard to port). Do the **Adam**-based
-   algorithms first; defer Reptile/neural nets to the Python path.
-3. **Performance matters. Time each individual user** and record that time in the `.jsonl`
-   output (a per-user field). We use it to find slow users / guide optimization.
-4. **CLI stays identical** — same flags as
-   https://github.com/open-spaced-repetition/srs-benchmark#scriptpy-options. See `config.rs`.
-5. **Verify every ported model:** its **unweighted (simple arithmetic) mean LogLoss across
-   1k users** (Andrew, 2026-06-07: 1k, not 10k, to save time) must not be **WORSE (higher)
-   than the original Python by more than 0.0005**. It may be **arbitrarily BETTER (lower)** —
-   one-sided tolerance (Andrew, 2026-06-07). I.e. PASS iff `mean_rust − mean_upstream ≤
-   0.0005`. (Our f64 finds slightly better optima than torch's f32 on chaotic models like
-   HLR/FSRS, giving lower loss — that's fine.) Reference files:
-   `C:\Users\Andrew\srs-benchmark\result_upstream\*.jsonl` (10000 users each; compare the
-   first-1000-user subset). LogLoss is the binding metric; other metrics best-effort.
-   (Verify on `anki-revlogs-10k --max-user-id 1000`.)
-6. **`size` (review count) must be EXACTLY identical** — both the per-user `size` value AND
-   the sum of `size` across all users — versus the original Python, for every config. `size`
-   = `len(y)` = number of evaluation rows for that user. This is NOT a tolerance: it is
-   exact. It means the **feature pipeline's row filtering** (rating filter, `i>128` drop,
-   short-term handling, `delta_t>0` final filter, and — for non-`--secs` — the outlier &
-   non-continuous-row removal) must be reproduced bit-for-bit so the surviving row set, the
-   TimeSeriesSplit, and thus the eval set match exactly. Per-user `size` mismatch ⇒ the port
-   is wrong even if mean LogLoss happens to land within tolerance. **Verify `size` first**
-   (cheap, exact) before trusting LogLoss.
+1. **Model math is reimplemented natively in Rust** for the ported algorithms; the Python
+   `srs-benchmark/models/*.py` stay as the canonical spec. Data pipeline, harness, metrics, IO → Rust.
+2. **GRU/LSTM/RWKV/Transformer/NN-17 keep the Python path** (Reptile optimizer / neural). The
+   Adam-based algorithms are the ones ported.
+3. **Time each user** and record it in the jsonl (`time_ms`) to find slow users.
+4. **CLI stays identical** to Python `script.py` (same flags/filenames; see `config.rs`). The
+   smart-preset flags are the one Rust-only extension.
+5. **mean LogLoss within ±0.0005, TWO-SIDED**, over **1000 users** (`--max-user-id 1000`). Outside
+   [−0.0005, +0.0005] (higher OR lower) fails and is investigated — a lower loss can be a genuine
+   f64-vs-f32 optimum but can also hide a bug. Reference = the **current Python**
+   (`srs-benchmark/result*/`); some committed `result_upstream/*.jsonl` are stale. LogLoss binds;
+   other metrics best-effort.
+6. **`size` (review count) EXACTLY identical** — per-user AND the sum — vs Python, every config. It
+   validates the feature pipeline's row filtering. **Check `size` first** (cheap, exact) before LogLoss.
 
-## 2. Datasets (siblings, read-only — never write there)
+## 2. Datasets (read-only siblings — never write there)
 
-Hive-partitioned parquet, `revlogs/cards/decks` each split by `user_id=N`:
-- `C:\Users\Andrew\anki-revlogs-10k` — 10000 users (matches upstream). Use this for all
-  runs/verification; `--max-user-id 1000` selects the first 1000 users for rule-#5 checks.
-
-Parquet schemas:
-- `revlogs/user_id=N/data.parquet`: `card_id, day_offset, rating, state, duration,
-  elapsed_days, elapsed_seconds, __index_level_0__` (the last is the original row index =
-  `review_th` ordering source).
+`C:\Users\Andrew\anki-revlogs-10k` — 10000 users, hive-partitioned parquet
+(`revlogs`/`cards`/`decks`, each split `user_id=N`). `--max-user-id 1000` = the rule-#5/#6 subset.
+- `revlogs/user_id=N/*.parquet`: `card_id, day_offset, rating, state, duration, elapsed_days,
+  elapsed_seconds, __index_level_0__` (last = review_th order).
 - `cards`: `card_id, note_id, deck_id`. `decks`: `deck_id, parent_id, preset_id`.
 
-## 3. The per-user pipeline (what we reproduce)
+## 3. Per-user pipeline (parallelized with rayon)
 
-For each user (independent → parallelize with rayon):
-1. **Load** `revlogs` parquet for the user.
-2. **`create_features`** (`features/base.py` + per-model engineer): review_th, nth_today,
-   `i` (review count per card), `delta_t`/`delta_t_secs`, `r_history`/`t_history` strings,
-   `y` (rating→{1:0,2:1,3:1,4:1}), `rmse_bins_lapse`, `last_rating`, `first_rating`, and
-   model-specific tensors. **Outlier/continuity filtering (`remove_outliers`,
-   `remove_non_continuous_rows`) runs ONLY for non-`--secs` configs** → target `--short
-   --secs` first to defer it.
-3. **Split:** sklearn `TimeSeriesSplit(n_splits=5)`; first split is train-only (dropped
-   from eval). (Untrainable models still split to define the test set.)
-4. **Train** (trainable only): per split, per partition. Adam + CosineAnnealingLR, BCE
-   loss (`reduction="none"` × weights, summed). See `Trainer` in `script.py`.
-5. **Predict** on each split's test set; collect `(p, y)`.
-6. **Evaluate** (`utils.evaluate`) → stats dict → one JSON line.
+Load revlogs → `create_features` (review_th, `i`, delta_t/delta_t_secs, r/t_history, y, rmse bins,
+first/last rating, model tensors; non-`--secs` also runs `remove_outliers`/`remove_non_continuous_rows`)
+→ `TimeSeriesSplit(5)` (first split train-only) → train (Adam + CosineAnnealingLR, summed BCE×weights)
+→ predict → evaluate → one jsonl line. `--short --secs` is the simplest path (no non-secs outlier filter).
 
-## 4. Output format
+## 4. Output
 
-`result/<name>.jsonl`, one JSON object per user, sorted by `user` at the end
-(`sort_jsonl`). Current Python `evaluate()` emits:
-```json
-{"metrics": {"RMSE":..,"LogLoss":..,"RMSE(bins)":..,"smECE":..,"AUC":..,
- "precision@90":..,"recall@90":..,"ICI":..,"MBE":..}, "user": N, "size": M,
- "parameters": [...] or {"<partition>": [...]}}
-```
-(Older reference files have a subset of metrics — fine, we compare `LogLoss`.) All metric
-values are `round(x, 6)`; `AUC` is `null` for single-class users. **We add a per-user
-timing field (rule #3).**
-
-Resume behaviour: `script.py` skips users already present in the result file (so delete it
-for a fresh run). `--raw` → `raw/<name>.jsonl` (`{user, p[round4], y}`).
+`result/<name>.jsonl`, one object/user sorted by user: `{"metrics": {...}, "user": N, "size": M,
+"parameters": [...] or {"<partition>": [...]}, "time_ms": ..}`. Metrics `round(,6)`; AUC null for
+single-class. Resume skips users already present (delete the file for a fresh run).
 
 ## 5. Build & run
 
 ```
-cargo build --release          # binary: target/release/script(.exe)
-target\release\script.exe --algo AVG --short --secs --data C:\Users\Andrew\anki-revlogs-10k --processes 16
+RUSTFLAGS="-C target-cpu=native" cargo build --release   # binary: target/release/script(.exe)
+target\release\script.exe --algo FSRS-6 --short --secs --data C:\Users\Andrew\anki-revlogs-10k --processes 16
 ```
-Rust toolchain 1.95 present. Verify a model (in order):
-1. **`size` exact** (rule #6): per-user `size` and the total `sum(size)` must match
-   `srs-benchmark\result_upstream\<name>.jsonl` exactly. Do this first — it validates the
-   feature pipeline / row filtering independently of any model math.
-2. **mean LogLoss one-sided** (rule #5): `mean_rust − mean_upstream ≤ 0.0005` over **1k
-   users** (better/lower is always fine).
+`-C target-cpu=native` enables FSRS-7's `f32x8` AVX2 gradient (plain build is correct, just SSE2).
+Cargo features: `fp64` (all-f64), `fsrs-rs` (real `fsrs` 4.1.1 crate), `neural`/`neural-cuda` (candle
+GRU/LSTM). Verify: **`size` exact first**, then **|mean LogLoss| ≤ 0.0005**. Tests: `cargo test` (f32);
+`cargo test --features fp64` adds finite-diff/oracle math checks.
 
-Run with `--data C:\Users\Andrew\anki-revlogs-10k --max-user-id 1000`, then compare to the
-first-1000-user subset of the matching `result_upstream\<name>.jsonl`.
+## 6. Precision: per-algo f32/f64 (critical)
 
-## 6. Status / phase plan
+`autodiff::round_scalar` rounds to f32 iff the static `autodiff::ROUND_F32` flag is set; `run.rs::run`
+sets it per-algo via `algo_uses_f64()`. **"Use the precision that reproduces upstream":**
+- **f32 algos** (analytic/reverse-mode gradient + non-trained): HLR, DASH, DASH[MCM], LogReg, FSRS-7,
+  AVG/SM2/MOVING-AVG/Ebisu/RMSE-BINS/FSRS-rs. f32 matches torch (e.g. `HLR --short --secs` ±0 in f32
+  vs −0.0058 in f64).
+- **f64 algos** (`algo_uses_f64`; forward-mode `Dual` gradient): ACT-R, Anki, DASH[ACT-R], FSRS
+  v1–v6/v4.5, FSRS-6-one-step, SM2-trainable. torch's f32 *reverse*-mode is only faithfully proxied by
+  a *f64 forward*-mode gradient; an f32 forward-mode broke chaotic `--secs` training badly.
 
-Tracked in the task list. Order:
-- **P0** repo + scaffold + verify push.
-- **P1** foundation: CLI (`config.rs` ✓ drafted), parquet read, rayon, jsonl out + resume +
-  sort + per-user timer.
-- **P2** feature engineering (base pipeline; `--short --secs` path first).
-- **P3** TimeSeriesSplit + metrics (LogLoss/RMSE/RMSE(bins)/AUC/MBE/precision@90/recall@90;
-  then ICI via lowess, smECE via relplot).
-- **P4** non-trainable: AVG, SM2, MOVING-AVG, Ebisu, RMSE-BINS-EXPLOIT (verify ±0.0005).
-- **P5** Adam-trained: HLR, DASH, ACT-R, FSRS v1–v6 + Rust Adam/autodiff.
-  - **FSRS-7 PORTED 2026-06-18** (was deferred while WIP; the model is now *finished*). See
-    the FSRS-7 subsection in §6 below. `--sched_penalties` path still deferred.
-- **P6** remaining: LogisticRegression, FSRS-rs, one-step, partitions, equalize, recency,
-  non-secs outlier path; Python path for GRU/LSTM/RWKV/Transformer/NN-17.
-  - **FSRS-rs (Andrew 2026-06-07): IMPORT the real `fsrs-rs` crate**
-    (`open-spaced-repetition/fsrs-rs`, the `fsrs` crate) and call it — do NOT reimplement
-    FSRS-6 training by hand. The benchmark's FSRS-rs config is literally that library.
+`--features fp64` forces all-f64 (finds slightly better optima but diverges from the f32 upstream).
 
-### Trained-model matching (key finding, 2026-06-07)
+## 7. Status
 
-The upstream trained references are **exactly reproducible** by the source Python on this
-machine (HLR sourcePy == upstream to 6 dp). So a ported trained model only has to match the
-Python training algorithm; the one uncontrolled variable is the **batch-visitation order**
-(`BatchLoader` uses `torch.randperm(batch_nums, generator=Generator().manual_seed(2023))`,
-advanced once per epoch). `train.rs` reproduces ATen's **MT19937 + 32-bit Fisher–Yates
-`randperm` exactly** (unit-tested vs torch 2.10). Adam (no weight decay), CosineAnnealingLR
-(`T_max = batch_nums*n_epoch`), summed BCE×weights, and best-weights-by-eval-loss all match
-`script.py::Trainer`. Note Rust uses f64 vs torch f32 — fine within the ±0.0005 tolerance.
+**All 65 upstream-referenced configs ported + verified** (size exact; mean LogLoss in-band, a few
+`⚠ genuine` lower-than-upstream f64/optimizer-trajectory diffs — see the README table). Plus: FSRS-7
+(f32, own SIMD gradient; verified vs current Python, `--sched_penalties` deferred), FSRS-rs
+(`--features fsrs-rs`), GRU/LSTM (`--features neural`), `--partitions deck|preset`, equalize, recency,
+two_buttons, S0, default, train_equals_test, the non-`--secs` path. **Smart presets** — §9.
 
-**BCE clamp (key fix, 2026-06-08):** `train.rs::bce` (used for best-weights selection) must
-clamp each **log term to min −100** (torch's `binary_cross_entropy`), NOT clamp `p` to
-`f64::EPSILON` (which caps the log at ≈−36). The −36 cap under-penalized confidently-wrong
-predictions, so on chaotic models the selector accepted overfit epochs torch rejects — e.g.
-FSRSv1 plain user 541 (rust trained to worse weights / LogLoss 3.82; torch kept init / 3.35).
-Fixing the clamp made FSRSv1 plain pass (+0.000947 → +0.000445) and pulled the whole FSRS
-family's short-secs diffs from ~−0.002 toward ~0 (closer to torch). The f32 experiment was
-what ruled out precision and forced finding this — the divergence was structural, not f32-vs-f64.
+**Perf (the project's point) — Phases 2 & 3 done** (per-iteration logs + frozen baselines in
+`_speedup/phase2/`, `_speedup/phase3/`):
+- **Autodiff** = forward-mode `Dual<P>` (`autodiff.rs`): the recurrence is written once; `P=0`
+  predict, `P=NP` gradient; every gradient finite-diff tested.
+- **Most trained algos now use hand-written reverse-mode analytic gradients** (one
+  `src/models/<m>_grad.rs` each) instead of forward-mode in `Model::grad`: FSRS v1–v6/v4.5,
+  SM2-trainable, DASH[ACT-R] (closed-form), and FSRS-7 (+`f32x8` SIMD). **⚠ These are MANUAL VJPs of
+  each model's specific forward — changing a model's math requires re-deriving its backward; the
+  `--features fp64` `*_grad_matches_*` oracle tests guard against drift.** Still forward-mode: Anki
+  (VJP wasn't a net win at NP=7), ACT-R (real cost is its O(reviews²) all-pairs value sum — a separate
+  algorithmic task), FSRS-6-one-step (hand-derived single-transition grad already).
+- **Speedup protocol** (if resumed): 200 users, before/after run SIMULTANEOUSLY 1-thread-each, accept
+  iff Wilcoxon p<0.01 AND faster AND within ±0.0005 of a FROZEN baseline AND size exact; log EVERY
+  iteration with the exact p-value in `_speedup/phase{2,3}/iterations.md` (harness there too).
 
-**⚠ PRECISION: PER-ALGO f32/f64 (Andrew, 2026-06-19) — supersedes the f64-everywhere note below.**
-`autodiff::round_scalar` (alias `r`) rounds to f32 iff the static `autodiff::ROUND_F32` flag is set
-(no-op = f64 otherwise); `run.rs::run` sets it per-algo via `algo_uses_f64()`. Build f64-everywhere
-with `cargo build --release --features fp64` (forces no-op). Rationale — **"use the precision that
-reproduces upstream"**:
-- **f32 algos** (analytic / reverse-mode gradients, + non-trained): HLR, DASH, DASH[MCM], LogReg,
-  FSRS-7, AVG/SM2/MOVING-AVG/Ebisu/RMSE-BINS/FSRS-rs. f32 matches torch (e.g. `HLR --short --secs`
-  was −0.0058 in f64, ±0 in f32). FSRS-7 is genuinely f32 incl. its `f32x8` SIMD.
-- **f64 algos** (`algo_uses_f64`: forward-mode `Dual`): ACT-R, Anki, DASH[ACT-R], FSRS v1–v6, v4.5,
-  FSRS-5, FSRS-6-one-step, SM2-trainable. These compute the gradient with FORWARD-mode autodiff;
-  torch uses REVERSE-mode, and only the **f64 forward-mode** gradient faithfully proxies torch's f32
-  reverse-mode (it matched upstream in the all-f64 era). A *f32* forward-mode gradient rounds
-  differently and **broke** sensitive `--secs` training badly (FSRS-6 --short --secs −0.000142 →
-  −0.019; predict stayed fine, only training diverged on the chaotic trajectory). Verified: full f64
-  reproduces upstream (no bug). So these algos run f64 and keep their already-verified f64 numbers.
+## 8. Key gotchas (still live)
 
-(History: a first attempt kept only the Dual *gradient* in f64 while value/Adam stayed f32 — that did
-NOT fix it (−0.019 persisted); the f32 value/Adam on the chaotic trajectory is the cause, so the
-whole algo must be f64.) Tests: `cargo test` runs f32 (ROUND_F32 default true); `cargo test --features
-fp64` adds the finite-difference math checks (gated to the `fp64` feature — h=1e-6 is meaningless in f32). *Why f32
-at all:* under the two-sided
-±0.0005 rule, f64's "better" optima on chaotic *analytic* models (`HLR --short --secs` −0.0058)
-count as FAILS (divergence from f32 upstream); f32 reproduces upstream there (→ ±0). f64 can still
-help some algos — hence the opt-in.
+- **BCE clamp:** `train.rs::bce` (best-weights selection) clamps each log term to min −100 (torch's
+  `binary_cross_entropy`), NOT `p` to EPSILON (which caps log at −36 and accepts overfit epochs).
+- **Determinism:** `fit_s0` sorts its grouped `(delta_t, recall, count)` before the loss sum (a
+  HashMap's random order gave non-deterministic S0 → non-deterministic results).
+- **S0 init** (`models/fsrs_init.rs`): per-first-rating golden-section 1-D fit + interpolation table.
+  FSRS-6-one-step uses a *local* descent variant (`fit_s0_from_x0`).
+- **Non-`--secs` row filtering:** new cards log `elapsed_days = -1` (not 0); only `i==2` rows are
+  removable; the whole-card-vs-`i==2` test is `first_review.elapsed_days <= 0`.
+- **Reference staleness:** some `result_upstream/*.jsonl` predate code changes — bind to *current*
+  Python when a config "fails" only vs the stale file.
+- **Batch RNG:** `train.rs` reproduces ATen MT19937 + 32-bit Fisher–Yates `randperm` (unit-tested).
 
-**Rule #5 is now TWO-SIDED (Andrew, 2026-06-19) — supersedes the one-sided note below.** PASS iff
-`|mean_rust − mean_upstream| ≤ 0.0005`. Anything outside [−0.0005, +0.0005] (higher OR lower) fails
-and is investigated (a much-lower loss can be a genuine f64-vs-f32 optimum, but it can also hide a
-bug). *(Historical: rule #5 was one-sided 2026-06-07 .. 2026-06-19; f64 was the default then.)*
+## 9. Smart presets (`--partitions smart`, FSRS-7) — Rust-only extension
 
-**VERIFIED (18 models, vs `result_upstream`, `--short --secs`, ALL on the full 1000-user
-basis; size exact per-user + sum for every one):**
-AVG/SM2/MOVING-AVG bit-exact; SM2-trainable −0.000620 (`models/sm2_trainable.rs`, Adam,
-reuses FSRS infra); Ebisu-v2 +0.000000 (well-conditioned — own Lanczos `lgamma` +
-scipy-style `brentq`, `models/ebisu.rs`); RMSE-BINS-EXPLOIT exact vs *current* Python
-(upstream file stale); DASH −6e-6, DASH[MCM] −1e-6, DASH[ACT-R] −5e-5; HLR −0.004352;
-FSRS v1 −0.001477, v2 −0.001793, v3 −0.002348, v4 −0.000341, v4.5 +0.000249, v5 +0.000037,
-v6 +0.000049; ACT-R −0.001420. (Re-verified on 1000 users at 10 threads after Andrew lifted
-the 1-thread limit; the earlier 200/20-user numbers are superseded. All pass the one-sided
-rule; max positive is FSRS-4.5 at +0.000249.)
+Cluster a user's decks by FSRS-7 param similarity (Mahalanobis) into data-driven presets, train per
+cluster. Per `TimeSeriesSplit` fold: per-deck train (the deck path) → log-transform params 0–3 + whiten
+(`src/smart.rs`, MinCovDet covariance `_smart/smart_preset_cov.json`) → cluster → per-cluster train →
+predict (test-only deck → nearest cluster to the user's global params). Eval row-set == non-partitioned
+⇒ `size` == `FSRS-7-short-secs`.
+- Clustering: `src/cluster.rs` hierarchical linkage (kodama) + SciPy-exact `fcluster(distance)`;
+  `src/hdbscan.rs` sklearn-matching HDBSCAN (eps inert; sweep varies mcs/ms/eom-leaf). Both unit-tested.
+- `--cluster_sweep` runs the whole matrix sharing per-deck training (hierarchical 30; HDBSCAN 16 via
+  `--cluster_method hdbscan`). Tooling + stripped result archive + xlsx filler in `_smart/`.
+- **Finding (1000 users): smart presets do NOT beat the per-user global model** — every config ≥
+  baseline; they only approach it as clusters collapse toward one.
+- **Shared partition fixes** (deck/preset too): missing-`cards` card → partition −1 (Python
+  `fillna(-1)`); card-less user → all −1; inadequate-partition double-fallback (→ user-level → INIT_W).
 
-**NON-`--secs` PATH NOW PORTED + VERIFIED** (`features.rs`: `remove_outliers` +
-`remove_non_continuous_rows`, run only when NOT `--secs`). Key gotcha: new cards log
-`elapsed_days = -1` (not 0), so the "card has an `i==1` row" test (which decides whole-card
-vs `i==2`-only drop) is `first_review.elapsed_days <= 0`. Only `i==2` rows (each card's first
-positive-interval review) are removable, so the only continuity gap can be at `i==2`.
-Verified on the 5 models with `-short` references (1000 users, size exact, sum 32 668 830
-each): SM2 +0.000000, DASH +0.000155, HLR −0.000763, FSRS-5 +0.000001, FSRS-6 −0.000008 —
-all PASS. (No `-short` upstream ref exists for the other ported models → they stay
-`--secs`-only.)
+## 10. Conventions
 
-**FSRS autodiff = forward-mode dual numbers** (`autodiff.rs`, `Dual<P>`): the recurrence is
-written ONCE over `Dual<P>`; `P=0` → fast value-only predict, `P=NP` → param gradients.
-Every model's gradient is finite-difference unit-tested. **S0 init** (`models/fsrs_init.rs`)
-= per-first-rating golden-section 1-D fit + interpolation table (replaces scipy.minimize;
-one-sided rule makes a true-minimum search safe). Train hooks in `train.rs`: `clip_params`
-(per-step clipper), `grad_mask` (v4/v4.5 freeze first 4), `eval_penalty` (v5/v6 L2). Per-user
-timing field is **`time_ms`**.
-
-**Determinism fix (2026-06-08):** `fit_s0` summed its fit-loss over a `HashMap`'s randomized
-iteration order → non-associative f64 sum → different S0 → non-deterministic init weights →
-non-deterministic results for ALL `fit_s0` models (FSRS v4/v4.5/v5/v6), ~1e-4 on the mean
-(within tolerance but real). Fixed by sorting the grouped `(delta_t, recall, count)` by
-`delta_t` before the loss sum (also matches pandas `groupby` key order). v1–v3 (fixed init)
-and non-fit_s0 models were already deterministic. The `rmse_bins` HashMap also iterates
-randomly but only perturbs RMSE(bins) at ~1e-15 (invisible after `round(,6)`), so it's benign.
-
-**⚠ PERF (the project's whole point — not yet addressed):** forward-mode is P× the value
-forward, so FSRS training is slow single-thread; ACT-R is worse (O(reviews²) all-pairs).
-Correct but needs a **reverse-mode / batching perf pass** (forward-mode models are the
-oracle). The data pipeline + non-trained models are already fast.
-
-**DONE since:** Anki (3 configs), `--recency`/`--two_buttons`(binary)/`--S0`/`--default`/
-`--train_equals_test` flag variants, `--partitions deck/preset` (FSRS-6, isolated
-`process_partitioned` branch + `data::read_user_partition_map` cards→decks join), and
-LogisticRegression (`models/logistic_regression.rs`: 34-feature linear model, AdamW, analytic
-gradient; feature_rating/first_rating use the FULL pre-filter card sequence while feat_elapsed
-uses the surviving prior — that was the bug, +0.024 → +0.000001). **65 configs verified.**
-**Determinism + BCE-clamp bugs fixed** (see notes above).
-
-**FSRS-6-one-step PORTED + VERIFIED (2026-06-08):** `models/fsrs_v6_one_step.rs`. Online
-FSRS-6: standard S0 init, then ONE pass over training reviews (review_th order), one SGD step
-(lr=1e-4) per review on a hand-derived gradient that backprops through only the most-recent
-transition. Predicts with stock FSRS-6 (`fsrs_v6::predict`) → eval row-set = FSRS-6-short, so
-`size` is exact by construction; only `p` differs. The training-forward `step` is the model's
-own simplified recurrence (S_MIN=0.001 floor, no s_max cap, `rating>=3` short-term branch, no
-failure floor, w[17..19] left unclamped) — ported byte-for-byte since it drives the SGD path.
-**Key fix:** the tiny-lr single pass barely moves S0, so the init must match scipy's *local*
-descent from `x0=init_s0`, NOT the golden-section's global min. Added `fit_s0_from_x0`
-(+`minimize_1d_local`: march downhill from x0 to bracket the basin, golden-section it, a
-descent into a bound returns it) used ONLY by one-step; other fit_s0 models keep the global
-golden-section (Adam re-optimizes S0 there, so it's unaffected — FSRS-6-short still −0.000008).
-Global golden-section gave +0.000493 (a few users blew up: S0=1.3 where scipy floored to
-0.001); local fit → **−0.000681** (better). `FSRS-6-one-step --short`: size exact, LogLoss
-−0.000681. NOTE: under the **two-sided** ±0.0005 rule (adopted 2026-06-19, after this was first
-recorded) −0.000681 is OUTSIDE the band, so it's marked **⚠ genuine** in the README — an
-f64-vs-f32 online-SGD-trajectory difference (FSRS-6-one-step is an f64 algo), not a bug; `size` is
-exact by construction. (Under the original one-sided rule "lower is always fine" it read as verified.)
-
-**`--equalize_test_with_non_secs` PORTED + VERIFIED (2026-06-08):** `features::build_equalize_splits`
-+ `Dataset::equalize_splits: Option<Vec<EqSplit>>`. Under `--secs --equalize_test_with_non_secs`
-the train/test split is governed by a `TimeSeriesSplit` over the **non-secs** survivors (run a
-second `create_features` with `use_secs=false`): per fold, test = the secs rows whose `review_th`
-is in the non-secs fold (non-secs survivors ⊆ secs survivors, 1:1), train = the secs prefix with
-`review_th < fold.min`. **Feature values stay the plain `--secs` ones** — for LogReg the equalize
-flag only swaps t_history's source `delta_t_secs`→`delta_t`, but the LogReg engineer already sets
-`delta_t = delta_t_secs`, and the 34 features don't read t_history, so they're identical to a plain
-`--secs` run. Built in `run.rs::process_user`, consumed by `logistic_regression::process` (and is
-reusable for the deferred FSRS-7/neural equalize variants). Verified `LogisticRegression --short
---secs --recency --equalize_test_with_non_secs`: size exact (per-user + sum 32 668 830 — equals the
-non-secs `-short` size, as expected since the test set is the non-secs survivors), LogLoss +0.000015.
-
-**FSRS-rs IMPLEMENTED (2026-06-08, full 1000-user verify pending):** `models/fsrs_rs.rs`, gated
-behind the optional `fsrs-rs` cargo feature (`cargo build --release --features fsrs-rs`). Imports
-the real `fsrs` crate and calls `FSRS::new(Some(&[])).benchmark(ComputeParametersInput{train_set,
-progress:None, enable_short_term:true, num_relearning_steps:None})` — the exact call
-`fsrs-rs-python` makes — then rounds weights to 4 dp; predicts with stock FSRS-6 (`fsrs_v6::predict`,
-matching the Python's `fsrs_optimizer.Collection`), so the eval set = FSRS-6-short and `size` is
-exact. Items = one per training review (priors + current as `(delta_t=max(0,int), rating)`), in
-review_th order, built from `prior_dt_active`/`prior_ratings` (port of `convert_to_items`).
-**⚠ Version gotcha:** the published PyPI wheel `fsrs-rs-python` 0.8.2 does NOT match the v0.8.2
-*git tag* (which pins fsrs git rev `932bb7af` = FSRS-5, 19 params). The installed wheel returns
-21 params (FSRS-6); a panic-path probe revealed it links **crates.io `fsrs 4.1.1`** (which exports
-19-param `DEFAULT_PARAMETERS` but trains a 21-param model). So Cargo.toml pins `fsrs = "=4.1.1"`
-(crates.io, NOT a git rev). Weights aren't bit-exact but
-match closely; 20-user spot check −0.000378 (size exact).
-
-**FSRS-rs VERIFIED vs CURRENT PYTHON; upstream file is STALE (2026-06-09):** size exact
-(32 668 830). The stored `result_upstream/FSRS-rs-short.jsonl` is **stale** — the *current* Python
-source does NOT reproduce it either (e.g. user 1: current-Python LogLoss 0.492687 vs upstream file
-0.493072), so per rule #5 / §7 the binding target is current Python, NOT the stale file. Against a
-freshly-generated **current-Python golden** (run `model_processors.process_fsrs_rs` per user), the
-Rust port is **+0.000212** over 30 users with **10/30 bit-identical** (e.g. users 1 & 3 match to all
-6 dp) and size exact — comfortably inside tolerance. (My initial "+0.000766 vs upstream / pipeline
-crashes" scare was a **bug in my own diagnostic**: I called `create_features` on a df that
-`data_loader.load_user_data` had *already* feature-engineered — double-processing produced the
-float/empty `t_history` and the crash. The real pipeline runs clean; the other Claude confirmed
-FSRS-rs is bit-identical between `df47eedc` and `c8b492e`.) `fsrs::benchmark` is deterministic &
-thread-independent. **Full 1000-user current-Python golden (parallel, RAYON_NUM_THREADS=1; the 3
-heaviest users — e.g. u927 with 375 k reviews — finished single-threaded): mean diff +0.000299,
-size exact (sum 32 668 830), 269/1000 (27 %) bit-identical**, the rest differing by small amounts in
-BOTH directions (387 above, 344 below; max ±0.04, symmetric) ⇒ the residual is f32 divergence
-between two separate `burn` compilations of the same `fsrs 4.1.1` training code, NOT an item bug —
-well inside the one-sided tolerance. FSRS-rs is VERIFIED vs current Python. Requires `--features
-fsrs-rs`.
-
-**REMAINING:** 90%/ConstantModel (no upstream ref → can't verify); `--raw`/`--file`/`--weights`
-output; ICI(lowess)/smECE(relplot) metrics; Python path for GRU/LSTM/RWKV/Transformer/NN-17; the
-perf pass. **FSRS-7 model now ported** (2026-06-18, verifying vs current Python; `--sched_penalties`
-deferred). GRU + LSTM ported natively via candle (`--features neural`/`neural-cuda`). All 65
-verifiable upstream configs ported & verified; FSRS-7 + neural-GRU/LSTM in progress.
-
-### FSRS-7 (34-param dual-stability) — PORTED 2026-06-18
-
-`models/fsrs_v7.rs`. Ported from the *current* `models/fsrs_v7.py` (the **finished** dual-stability
-FSRS-7, itself a port of `Expertium/fsrs-rs-speed-autoresearch`). 34 params, 3-component state
-`[long S, short S, difficulty]`; dual-trace forgetting curve (`short_recall` r1 + long r2, the
-difficulty effect on the long-term timescale); `next_stability(start=7|15)`; surprise-weighted-lapse
-`next_difficulty`; 34-box-clamp + monotonicity clipper. **No S0 fit** — trains from `INIT_W` directly.
-Adam (`lr=0.0118, betas=(0.70,0.98), n_epoch=9, batch=512`), CosineAnnealingLR, **keep-final-epoch**
-(new `TrainConfig.keep_final` — no best-eval checkpoint). Only penalty active by default: the
-L2-to-default prior `0.3333·Σ(w−w0)²/σ²` (added in `grad` with the `idx.len()·PENALTY_W_L2/n_rows`
-per-batch scale, mirroring FSRS-6's L2; σ = `L2_SIGMA`, 0..3 = 9999 ⇒ negligible). FSRS-7 has its
-**own recency weighting** `0.0667 + 0.9333·(k/n)^11.25` (`recency_weights_fsrs7`, k 0-based, denom n).
-Gradient finite-diff unit-tested (`fsrs7_grad_matches_finite_difference`). `--sched_penalties`
-(differentiable Newton+IFT interval penalties, `fsrs_v7_interval_penalty.py`) is **DEFERRED** per
-Andrew (2026-06-18).
-
-**FSRS-7 verification basis (Andrew, 2026-06-18):** binding target is the **current Python
-`srs-benchmark/result/FSRS-7-*.jsonl`** (NOT `result_upstream`), first **200 users by id**. PASS iff
-**`size` exact** (per-user AND sum) AND **|mean_rust − mean_python| ≤ 0.0005** (two-sided — FSRS-7
-must *match* the Python, which is itself a port of the Rust autoresearch impl). 200 users is assumed
-sufficient (don't run 10k yet). **Do NOT record the 200-user numbers in the README.** Configs in the
-current `result/`: plain, `-default`, `-recency`, each ×`-equalize_test_with_non_secs` (no
-preset/`sched_penalties` in current result/).
-
-**FSRS-7 SPEEDUP PROTOCOL (Andrew, 2026-06-18) — Phase 2:**
-- **Correctness gate:** after each speedup, the 200-user avg LogLoss (per config) must stay within
-  **±0.0005 of the ORIGINAL (first correct) Rust FSRS-7 baseline** — a FROZEN reference, NOT the
-  rolling champion (prevents slow drift over many edits). Record the original per-config 200-user avg.
-- **Speed decision:** measure per-user wall-clock `time_ms` (preprocessing → optimization → jsonl
-  write) over the 200 users. Keep a speedup iff a **Wilcoxon signed-rank test** on the 200 paired
-  (before, after) `time_ms` gives **p < 0.01** (significantly faster).
-- **Measure before & after SIMULTANEOUSLY** (1 thread each = 2 threads total) so thermal/scheduling
-  noise hits both runs equally. Speedups may be FSRS-7-specific (e.g. hand-written reverse-mode
-  gradients) or general. Reference `Expertium/fsrs-rs-speed-autoresearch` — most of the work is done
-  there; reuse it, don't reinvent (but new opportunities are welcome).
-- **2-thread cap while Andrew benchmarks Python** (2026-06-18): all Rust runs use `--processes 2`.
-- **Log EVERY iteration (Andrew, 2026-06-19)** in `_phase2/iterations.md`: timestamp, iter #,
-  LogLoss before, LogLoss after, avg time/user before, avg time/user after, Wilcoxon p-value (plus
-  the change description + accept/reject decision). Record rejects too. The `_phase2/` dir also holds
-  the reusable harness: `compare_loss.py` (correctness gate), `wilcoxon_time.py` (speed gate),
-  `run_timing.sh` (simultaneous baseline-vs-candidate timing). Baseline binary snapshot:
-  `target/release/script_baseline.exe`; champion snapshots named `script_<iter>.exe`.
-
-**FROZEN ORIGINAL baseline (2026-06-18, the first correct Rust FSRS-7; saved in `_fsrs7_baseline/`,
-which also holds per-user LogLoss + `time_ms`):** 200-user avg LogLoss — plain `0.323582`, default
-`0.346049`, default-equalize `0.378932`, recency `0.320772`, recency-equalize `0.345821`. Phase-1
-verify (vs current Python, 200 users): all **size-exact** (per-user + sum); ΔLogLoss plain +0.000004
-(57 common — Python file mid-regen), default +0.000000, default-equalize +0.000000, recency
-−0.000003, recency-equalize −0.000000 — all PASS. The training configs cost ~3000 s CPU / 200 users
-(Dual&lt;34&gt; forward-mode autodiff over the 3-state recurrence) — that's the Phase-2 speedup target;
-the `--default` configs don't train (~40 s).
-
-**PHASE-2 PROGRESS (2026-06-19) — 4 iterations accepted, ≈×20 on training (full log + per-iter
-factors/p-values in `_phase2/iterations.md`):**
-- **iter 1 — analytic reverse-mode gradient** (`models/fsrs_v7_grad.rs`): hand-written scalar VJP
-  (f64 port of `fsrs-rs-speed-autoresearch/fsrs-rs/src/analytic.rs`) replaces the forward-mode
-  `Dual<34>` in `Model::grad`/`predict`. Same per-prefix batching ⇒ trajectory preserved (+0.000117
-  plain). **×3.96** training (p≈7e-35).
-- **iter 2 — windowed O(C) predict** (`fsrs_v7_grad::predict_card`): replay each card's sequence
-  ONCE, emit a prediction per requested position (bit-identical; prediction order is
-  trajectory-free). **×2.0** on `--default` configs (predict is ~80 % there; ~2.5 % of training).
-- **iter 3 — `f64x4` SIMD gradient** (`models/fsrs_v7_simd.rs`): vectorize the per-prefix recurrence
-  fwd+bwd across 4 rows/lane (`wide`, AVX2), Cephes `f64x4` exp/ln (~1 ulp). EXACT batching ⇒ all 5
-  configs identical to scalar at 6 dp. **×2.84** training (p≈7e-35). **Build:** `RUSTFLAGS="-C
-  target-cpu=native" cargo build --release` (plain build still correct, just SSE2-narrow).
-- **REJECTED by analysis — windowed O(N) *training* (card batching):** the reference repo's own
-  iter-18 data shows the card-grouped batching costs **+0.0009 LogLoss** (forced their band to
-  ±0.0015). That is &gt;our ±0.0005 AND would stop the Rust matching Python — so it stays out. (The
-  windowed *gradient* is math-identical; only the batch-composition change hurts. Windowing is safe
-  for predict, not training.)
-- **iter 8 — precision switch to f32** (`models/fsrs_v7_simd.rs`, `fsrs_v7_grad.rs`): FSRS-7 was made
-  an **f32** algo (Andrew, 2026-06-19, to match the official fsrs-rs), so the SIMD gradient was ported
-  **`f64x4` → `f32x8`** (8 rows/lane, hardware f32) and the scalar analytic path now rounds to f32.
-  EXACT batching preserved; 200-user LogLoss moved only ~2e-4 (well inside ±0.0005). **×1.82** vs the
-  `f64x4` champion (p = 7.181e-35). **Supersedes the `f64x4` SIMD of iter 3.** (iters 4–7 were the
-  precision-investigation scratch runs; see `_phase2/iterations.md`.)
-
-### Phase 3 — speed up the OTHER (forward-mode-`Dual`) algos (2026-06-20)
-
-Generalizes Phase-2 to the slow non-FSRS-7 algos (all forward-mode `Dual<P>` ⇒ ~P× the value pass
-per op). Same protocol as Phase-2 (200 users, simultaneous before/after 1-thread-each, Wilcoxon
-p<0.01; ±0.0005 **per-algo** vs a FROZEN baseline; `size` exact; still match upstream). Full log +
-frozen baselines in `_phase3/` (`iterations.md`, `baseline/`); reuses the `_phase2/` harness.
-Champion binary at end of batch: `target/release/script_p3_iter10.exe`; frozen-baseline binary
-`script_p3base.exe`.
-
-- **iter 1 (ACCEPT, bit-identical)** — stripped `round_scalar` from the `Dual<P>` ops
-  (`src/autodiff.rs`). `Dual` is f64-only in production, so the per-element rounding was a no-op;
-  removing it un-blocks auto-vectorization of the const-`P` gradient loops. Helps EVERY
-  forward-mode-`Dual` algo at once, scaling with P: FSRS-6 ×2.17, SM2 ×1.44, ACT-R ×1.21.
-- **iters 2–10 (ACCEPT) — hand-written reverse-mode VJPs** replacing forward-mode `Dual<P>` in
-  `Model::grad` (predict keeps `Dual<0>`; `retention` → `retention_dual` = the gradient oracle), one
-  `src/models/<m>_grad.rs` per model, f64, each finite-diff/oracle unit-tested (`--features fp64`):
-  FSRS-6 ×1.60, FSRS-5 ×1.30, FSRS-4.5 ×1.38, FSRS-4 ×1.33, FSRS-3 ×1.27, FSRS-2 ×1.33, FSRS-1 ×1.12,
-  SM2-trainable ×1.07, DASH[ACT-R] ×1.19 (the last is a **closed-form** analytic grad — DASH[ACT-R]
-  is a static sum, not a recurrence). All within ±0.0005 (mostly ≈0), `size` exact, match upstream.
-  Reverse-mode and forward-mode compute the same f64 derivative (differ ~1e-15 in summation order),
-  so LogLoss barely moves. **⚠ These are MANUAL VJPs of specific forwards — changing a model's
-  formulas requires re-deriving its backward** (the fp64 oracle tests guard this).
-- **iter 11 (REJECT) — Anki** reverse-mode VJP was correct (oracle <1e-6, bit-identical) but **×0.97
-  (slower)** than the vectorized `Dual<7>` — at low NP with heavy `max`/`leaky_relu`/branch routing,
-  the VJP's per-step cache costs more than the short forward-mode P-loop. Reverted; Anki stays
-  forward-mode.
-- **STILL forward-mode `Dual`:** Anki (reject above), ACT-R (its real cost is the O(reviews²)
-  all-pairs activation *value* sum, which a VJP doesn't fix — a separate algorithmic task),
-  FSRS-6-one-step (hand-derived single-transition grad already). Cumulative on FSRS-6 training:
-  iter1 ×2.17 × iter2 ×1.60 ≈ **×3.5**.
-
-### Smart presets (`--partitions smart`, FSRS-7 only) — 2026-06-20
-
-Data-driven presets: cluster a user's decks by FSRS-7 param similarity (Mahalanobis), train one set
-per cluster. NOT an upstream feature — a Rust-only extension Andrew is researching (37-experiment
-matrix in `Smart Preset Assignment.xlsx`; spec = `…/PythonProject/FSRS smart preset assignment
-(simple).py`). Pipeline per `TimeSeriesSplit` fold: per-deck train (the verified deck path) → whiten
-(log params 0–3, `(x−center)@W.T`) → cluster → per-cluster train → predict (test-only deck → nearest
-cluster to the user's global params). Eval row-set == non-partitioned ⇒ `size` matches
-`FSRS-7-short-secs` (the baseline, "exp 0").
-- **Covariance** (`_smart/fit_covariance.py` → `_smart/smart_preset_cov.json`): `MinCovDet(random_
-  state=43)` on the **FSRS-7 `--short --secs --recency` global params of all 10k users**, `precision=
-  pinv(cov)`, `whitening=diag(√eigvals)@eigvecs.T`, NO shrinkage. Loaded once in `run.rs` (`src/smart.rs`).
-- **Clustering** (`src/cluster.rs`): `kodama` crate linkage (single/complete/average/centroid/ward) +
-  a hand-written SciPy-compatible `fcluster(criterion="distance")` (monotone max-dist cut + union-find).
-  Unit-tested to match SciPy exactly.
-- **HDBSCAN** (`src/hdbscan.rs`, `--cluster_method hdbscan --cluster_sweep`, 16 experiments =
-  min_cluster_size{2,5,10,20} × min_samples{1,5} × {eom,leaf}): core dist (incl-self[ms-1]) →
-  mutual-reach → sklearn's exact Prim's MST + union-find single-linkage → condense → stability →
-  EOM/leaf → labels (incl. the single-root λ-threshold). Matches sklearn 31/32 fixture cases; the 1
-  diff (ms5+leaf) is numpy's unstable-argsort tie order (unreplicable, not a bug). **eps is NOT a
-  useful knob** (inert at the whitened-distance scale; sklearn crashes for large eps) — hence the
-  mcs/ms/method sweep. noise→nearest reassigns HDBSCAN noise decks (prototype's NOISE_HANDLING).
-- **Model** (`models/fsrs_v7.rs`): `process_smart` (one experiment) + `process_smart_sweep` (all 30,
-  sharing per-deck training — ~2.6× faster than 30 single runs; `--cluster_sweep`, dispatched by
-  `run.rs::run_smart_sweep`). Reuses the extracted `train_partition_weights` (deck double-fallback).
-- **Verified:** clustering == SciPy; whiten = Mahalanobis (self-consistent to 2e-9); reduces to
-  baseline at 1 cluster (LogLoss identical); sweep == single (byte-identical); `size` exact.
-- **Flags:** `--partitions smart`, `--cluster_method`, `--cluster_threshold`, `--cluster_sweep`.
-  Output: `result/FSRS-7-short-secs-smart-<method>-<threshold>.jsonl`. Report: `_smart/sweep_report.py`.
-- **Partition bug fixes (shared by deck/preset too, 2026-06-20):** missing-`cards`-row card → partition
-  **-1** (Python `fillna(-1)`), not 0 (would collide with real deck 0); a user with NO `cards/` dir →
-  empty map ⇒ all -1 (matches Python's empty-merge fallback — was erroring/skipping the user).
-
-## 7. Conventions
-
-- **One model per file** under `src/models/` (mirrors the Python `models/` layout): each
-  exposes `process(ds, cfg) -> ModelOutput`. Shared training infra (Adam, cosine LR,
-  MT19937 randperm, train loop) lives in `train.rs`; `models/mod.rs` holds `ModelOutput` +
-  `recency_weights`. `run.rs` dispatches `models::<name>::process`.
-- **Reference staleness:** some `result_upstream/*.jsonl` files predate code changes (e.g.
-  RMSE-BINS-EXPLOIT: my port is bit-identical to *current* source Python, but the upstream
-  file differs by ~0.04). Rule #5's target is the *current* Python version — when a model
-  fails vs upstream, check it against the current source Python (`harness`/golden) before
-  assuming a bug.
-- Match Python numerics closely but **bit-exactness is NOT required** (rule #5 is a ±0.0005
-  tolerance), which buys freedom on reduction order, batch-shuffle RNG, f32-vs-f64, etc.
-  Still, prefer the same math/order where cheap, to stay well inside tolerance.
-- Keep flags/filenames identical to Python (`config.rs`). When unsure of a feature detail,
-  read the Python in `C:\Users\Andrew\srs-benchmark` — it is the spec.
-- Andrew is Python/PyTorch-first; keep Rust readable and explain non-Python tooling.
+- **One model per file** under `src/models/` (mirrors Python `models/`); each exposes
+  `process(ds, cfg) -> ModelOutput`. Shared infra (Adam, cosine LR, MT19937 randperm, train loop) in
+  `train.rs`; `run.rs` dispatches `models::<name>::process`.
+- **Bit-exactness NOT required** (±0.0005 tolerance) — freedom on reduction order, RNG, f32-vs-f64;
+  still prefer the same math/order where cheap.
+- When unsure of a feature detail, read the Python spec. Andrew is Python/PyTorch-first — keep Rust
+  readable and explain non-Python tooling.
+- **Long benchmark runs:** launch via detached PowerShell `Start-Process` (chunked `.ps1`), NOT the
+  Bash tool's background (which dies on interrupt). 2-thread cap while Andrew benchmarks Python.
