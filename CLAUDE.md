@@ -376,6 +376,20 @@ factors/p-values in `_phase2/iterations.md`):**
   `f64x4` champion (p = 7.181e-35). **Supersedes the `f64x4` SIMD of iter 3.** (iters 4–7 were the
   precision-investigation scratch runs; see `_phase2/iterations.md`.)
 
+### Phase 3 — speed up the OTHER (forward-mode-`Dual`) algos (2026-06-20, ongoing)
+
+Generalizes Phase-2 to the slow non-FSRS-7 algos: FSRS v1–v6, FSRS-4.5, FSRS-6-one-step, ACT-R,
+Anki, DASH[ACT-R], SM2-trainable (all forward-mode `Dual<P>` ⇒ ~P× the value pass per op). Same
+protocol as Phase-2 (200 users, simultaneous before/after 1-thread-each, Wilcoxon p<0.01; ±0.0005
+**per-algo** vs a FROZEN baseline; `size` exact; still match upstream). Log + frozen baselines live
+in `_phase3/` (`iterations.md`, `baseline/`); reuses the `_phase2/` harness. Champion binary:
+`target/release/script_p3_iter1.exe`; frozen-baseline binary `script_p3base.exe`.
+- **iter 1 (ACCEPT, bit-identical)** — stripped `round_scalar` from the `Dual<P>` ops
+  (`src/autodiff.rs`). `Dual` is f64-only in production, so the per-element rounding was a no-op;
+  removing it un-blocks auto-vectorization of the const-`P` gradient loops. Speeds up EVERY
+  forward-mode-`Dual` algo at once, scaling with P: FSRS-6 --short --secs **×2.17** (p=7.181e-35),
+  SM2-trainable ×1.44, ACT-R ×1.21 (ACT-R is value-dominated by its O(reviews²) sum — a later iter).
+
 ## 7. Conventions
 
 - **One model per file** under `src/models/` (mirrors the Python `models/` layout): each
