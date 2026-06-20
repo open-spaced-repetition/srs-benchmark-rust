@@ -255,9 +255,9 @@ impl BatchModel for Model<'_> {
         out
     }
     fn grad(&self, params: &[f64], idx: &[usize]) -> Vec<f64> {
-        // f64×4 SIMD reverse-mode gradient (4 per-prefix rows/lane). Same per-prefix batching as
-        // the scalar path it replaces (validated bit-close in `fsrs_v7_simd`'s test), so the
-        // training trajectory is preserved up to the ~1e-14 f64×4-transcendental difference.
+        // f32×8 SIMD reverse-mode gradient (8 per-prefix rows/lane), genuine f32 like torch. Same
+        // per-prefix batching as the scalar path (validated f32-close in `fsrs_v7_simd`'s test),
+        // so the training trajectory is preserved up to the f32 transcendental difference.
         let wc = wconsts(params, self.s_min);
         let wl = WLanes::new(params, &wc);
         let mut g = vec![0.0f64; NP];
@@ -404,6 +404,9 @@ fn process_partitioned(ds: &Dataset, cfg: &Config, tc: &TrainConfig) -> ModelOut
 #[cfg(test)]
 mod tests {
     use super::*;
+    // Finite-difference (h=1e-6) needs f64; in the default f32 build the difference is dominated
+    // by rounding noise, so this math check runs under the `fp64` feature only.
+    #[cfg(feature = "fp64")]
     #[test]
     fn fsrs7_grad_matches_finite_difference() {
         let prior_dt = [0.0, 0.3, 9.0, 1.5, 30.0, 0.02, 100.0];

@@ -180,8 +180,38 @@ fn write_sorted(path: &Path, mut values: Vec<Value>) -> Result<(), String> {
     Ok(())
 }
 
+/// Algos whose trained gradient comes from forward-mode `Dual` autodiff. They run in f64: torch
+/// computes gradients in reverse-mode, and only the f64 forward-mode gradient faithfully proxies
+/// it (matched upstream in the all-f64 era) — a f32 forward-mode gradient diverges badly on
+/// chaotic `--secs` training. All other algos (analytic/reverse-mode: HLR, DASH, LogReg, FSRS-7;
+/// and the non-trained models) run in f32 to match torch / the f32 upstream references.
+fn algo_uses_f64(model_name: &str) -> bool {
+    matches!(
+        model_name,
+        "ACT-R"
+            | "Anki"
+            | "DASH[ACT-R]"
+            | "FSRSv1"
+            | "FSRSv2"
+            | "FSRSv3"
+            | "FSRSv4"
+            | "FSRS-4.5"
+            | "FSRS-5"
+            | "FSRS-6"
+            | "FSRS-6-one-step"
+            | "SM2-trainable"
+    )
+}
+
 /// Main benchmark run.
 pub fn run(cfg: &Config) -> Result<(), String> {
+    // Per-algo precision (see `autodiff::ROUND_F32`): f32 for analytic/reverse-mode algos (match
+    // the f32 upstream refs), f64 for forward-mode-`Dual` algos. Set once before the parallel loop.
+    crate::autodiff::ROUND_F32.store(
+        !algo_uses_f64(&cfg.model_name),
+        std::sync::atomic::Ordering::Relaxed,
+    );
+
     let users = enumerate_users(&cfg.data_path, cfg.max_user_id)?;
 
     fs::create_dir_all("result").map_err(|e| e.to_string())?;

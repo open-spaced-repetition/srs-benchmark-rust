@@ -1,18 +1,19 @@
-//! f64×4 SIMD (AVX2) port of the FSRS-7 gradient — vectorizes the per-prefix recurrence
-//! forward+backward across **4 rows per lane**. The math is identical to the scalar
-//! [`super::fsrs_v7_grad`]; only the data type changes (`f64` → `wide::f64x4`), `if` → lane
-//! `blend`, and `clamp` → `fast_max/fast_min`. Transcendentals use `wide`'s built-in f64×4
-//! `exp`/`ln` (Cephes, ~1 ulp), so the result is NOT bit-identical to scalar libm but agrees to
-//! ~1e-14 — far inside the ±0.0005 gate, and the **batching is unchanged** (same per-prefix
-//! items, same order), so the training trajectory is preserved up to that tiny FP difference.
+//! f32×8 SIMD (AVX/AVX2) port of the FSRS-7 gradient — vectorizes the per-prefix recurrence
+//! forward+backward across **8 rows per lane**, in genuine f32 (matching torch / the official
+//! fsrs-rs, which are f32). The math is identical to the scalar [`super::fsrs_v7_grad`]; only the
+//! data type changes (`f64` → `wide::f32x8`), `if` → lane `blend`, and `clamp` →
+//! `fast_max/fast_min`. Transcendentals use `wide`'s built-in f32×8 `exp`/`ln` (Cephes, ~few f32
+//! ulp); the scalar path rounds libm to f32, so the two agree to ~f32 ulp (well inside the
+//! ±0.0005 gate). The **batching is unchanged** (same per-prefix items, same order), so the
+//! training trajectory is preserved up to that f32 difference.
 //!
-//! The 4 lanes are 4 distinct per-prefix rows of (usually) different prefix length. The recurrence
+//! The 8 lanes are 8 distinct per-prefix rows of (usually) different prefix length. The recurrence
 //! runs `max_pos` steps; a lane whose prefix is shorter gets `rating==0` padding steps that FREEZE
 //! its state (and pass the adjoint straight through in the backward), so its final-state prediction
 //! is exactly its own state-after-prefix. Dummy/short lanes carry `weight==0` ⇒ zero gradient.
 //! Rows with `pos==0` (empty prefix) are handled by the scalar path (caller), never here.
 
-use wide::{f64x4, CmpEq, CmpGe, CmpGt, CmpLe, CmpLt};
+use wide::{f32x8, CmpEq, CmpGe, CmpGt, CmpLe, CmpLt};
 
 use super::fsrs_v7::NP;
 use super::fsrs_v7_grad::WConsts;
@@ -25,45 +26,45 @@ const MIN_R: f64 = 1e-5;
 const MAX_R: f64 = 1.0 - 1e-5;
 
 #[inline(always)]
-fn sp(x: f64) -> f64x4 {
-    f64x4::from(x)
+fn sp(x: f64) -> f32x8 {
+    f32x8::splat(x as f32)
 }
 #[inline(always)]
-fn clamp4(x: f64x4, lo: f64, hi: f64) -> f64x4 {
+fn clamp4(x: f32x8, lo: f64, hi: f64) -> f32x8 {
     x.fast_max(sp(lo)).fast_min(sp(hi))
 }
 
 // ===================== forgetting curve =====================
 
 struct Curve4 {
-    out: f64x4,
-    a: f64x4,
-    bv: f64x4,
-    decay1: f64x4,
-    factor1: f64x4,
-    b1: f64x4,
-    r1: f64x4,
-    q1: f64x4,
-    e1: f64x4,
-    m1: f64x4,
-    p35: f64x4,
-    b2: f64x4,
-    r2: f64x4,
-    ex34: f64x4,
-    weight1: f64x4,
-    weight2: f64x4,
-    wsum: f64x4,
-    ret: f64x4,
-    p31: f64x4,
-    se: f64x4,
-    ln_sf: f64x4,
-    ln_b1: f64x4,
-    ln_b2: f64x4,
-    ln_s: f64x4,
+    out: f32x8,
+    a: f32x8,
+    bv: f32x8,
+    decay1: f32x8,
+    factor1: f32x8,
+    b1: f32x8,
+    r1: f32x8,
+    q1: f32x8,
+    e1: f32x8,
+    m1: f32x8,
+    p35: f32x8,
+    b2: f32x8,
+    r2: f32x8,
+    ex34: f32x8,
+    weight1: f32x8,
+    weight2: f32x8,
+    wsum: f32x8,
+    ret: f32x8,
+    p31: f32x8,
+    se: f32x8,
+    ln_sf: f32x8,
+    ln_b1: f32x8,
+    ln_b2: f32x8,
+    ln_s: f32x8,
 }
 
 #[allow(clippy::too_many_arguments)]
-fn curve4_fwd(w: &WLanes, t: f64x4, s: f64x4, sf: f64x4, d: f64x4, ln_s: f64x4, ln_sf: f64x4) -> Curve4 {
+fn curve4_fwd(w: &WLanes, t: f32x8, s: f32x8, sf: f32x8, d: f32x8, ln_s: f32x8, ln_sf: f32x8) -> Curve4 {
     let t = t.fast_max(sp(0.0));
     let a = t / sf;
     let bv = t / s;
@@ -99,7 +100,7 @@ fn curve4_fwd(w: &WLanes, t: f64x4, s: f64x4, sf: f64x4, d: f64x4, ln_s: f64x4, 
 }
 
 #[allow(clippy::too_many_arguments)]
-fn curve4_bwd(w: &WLanes, c: &Curve4, t: f64x4, s: f64x4, sf: f64x4, d: f64x4, g_out: f64x4, g_r1_extra: f64x4, gw: &mut [f64x4; NP]) -> (f64x4, f64x4, f64x4) {
+fn curve4_bwd(w: &WLanes, c: &Curve4, t: f32x8, s: f32x8, sf: f32x8, d: f32x8, g_out: f32x8, g_r1_extra: f32x8, gw: &mut [f32x8; NP]) -> (f32x8, f32x8, f32x8) {
     let z = sp(0.0);
     let t = t.fast_max(z);
     let g_ret = g_out * sp(1.0 - 2e-5);
@@ -158,25 +159,25 @@ fn curve4_bwd(w: &WLanes, c: &Curve4, t: f64x4, s: f64x4, sf: f64x4, d: f64x4, g
 // ===================== stability after review =====================
 
 struct Stab4 {
-    out: f64x4,
-    nsf_fail: f64x4,
-    pls: f64x4,
-    sinc: f64x4,
-    ls_sinc: f64x4,
-    aa: f64x4,
-    bb: f64x4,
-    cc: f64x4,
-    expr: f64x4,
-    qbase: f64x4,
-    rexp: f64x4,
-    hard: f64x4,
-    easy: f64x4,
-    ln_ls: f64x4,
-    ln_ls1: f64x4,
+    out: f32x8,
+    nsf_fail: f32x8,
+    pls: f32x8,
+    sinc: f32x8,
+    ls_sinc: f32x8,
+    aa: f32x8,
+    bb: f32x8,
+    cc: f32x8,
+    expr: f32x8,
+    qbase: f32x8,
+    rexp: f32x8,
+    hard: f32x8,
+    easy: f32x8,
+    ln_ls: f32x8,
+    ln_ls1: f32x8,
 }
 
 #[allow(clippy::too_many_arguments)]
-fn stab4_fwd(w: &WLanes, last_s: f64x4, last_d: f64x4, r: f64x4, rating: f64x4, start: usize, aa: f64x4, ln_ls: f64x4) -> Stab4 {
+fn stab4_fwd(w: &WLanes, last_s: f32x8, last_d: f32x8, r: f32x8, rating: f32x8, start: usize, aa: f32x8, ln_ls: f32x8) -> Stab4 {
     let one = sp(1.0);
     let hard = rating.cmp_eq(sp(2.0)).blend(w.w[start + 6], one);
     let easy = rating.cmp_eq(sp(4.0)).blend(w.w[start + 7], one);
@@ -196,7 +197,7 @@ fn stab4_fwd(w: &WLanes, last_s: f64x4, last_d: f64x4, r: f64x4, rating: f64x4, 
 }
 
 #[allow(clippy::too_many_arguments)]
-fn stab4_bwd(w: &WLanes, c: &Stab4, last_s: f64x4, r: f64x4, rating: f64x4, start: usize, g_out: f64x4, gw: &mut [f64x4; NP]) -> (f64x4, f64x4, f64x4) {
+fn stab4_bwd(w: &WLanes, c: &Stab4, last_s: f32x8, r: f32x8, rating: f32x8, start: usize, g_out: f32x8, gw: &mut [f32x8; NP]) -> (f32x8, f32x8, f32x8) {
     let one = sp(1.0);
     let z = sp(0.0);
     let gt1 = rating.cmp_gt(one);
@@ -236,7 +237,7 @@ fn stab4_bwd(w: &WLanes, c: &Stab4, last_s: f64x4, r: f64x4, rating: f64x4, star
 
 // ===================== next difficulty =====================
 
-fn next_d4_fwd(w: &WLanes, last_d: f64x4, rating: f64x4, r: f64x4) -> (f64x4, f64x4, f64x4) {
+fn next_d4_fwd(w: &WLanes, last_d: f32x8, rating: f32x8, r: f32x8) -> (f32x8, f32x8, f32x8) {
     let delta_d_base = -w.w[6] * (rating - sp(3.0));
     let is_lapse = rating.cmp_eq(sp(1.0));
     let delta_d = is_lapse.blend(delta_d_base * (r + sp(0.1)), delta_d_base);
@@ -246,7 +247,7 @@ fn next_d4_fwd(w: &WLanes, last_d: f64x4, rating: f64x4, r: f64x4) -> (f64x4, f6
 }
 
 #[allow(clippy::too_many_arguments)]
-fn next_d4_bwd(w: &WLanes, out_pre: f64x4, delta_d: f64x4, last_d: f64x4, rating: f64x4, r: f64x4, g_out: f64x4, gw: &mut [f64x4; NP]) -> (f64x4, f64x4) {
+fn next_d4_bwd(w: &WLanes, out_pre: f32x8, delta_d: f32x8, last_d: f32x8, rating: f32x8, r: f32x8, g_out: f32x8, gw: &mut [f32x8; NP]) -> (f32x8, f32x8) {
     let z = sp(0.0);
     let in_range = out_pre.cmp_gt(sp(D_MIN)) & out_pre.cmp_lt(sp(D_MAX));
     let g_out_pre = in_range.blend(g_out, z);
@@ -267,25 +268,25 @@ fn next_d4_bwd(w: &WLanes, out_pre: f64x4, delta_d: f64x4, last_d: f64x4, rating
 // ===================== one recurrence step =====================
 
 struct Step4 {
-    s0: f64x4,
-    d0: f64x4,
-    sf0: f64x4,
-    last_s: f64x4,
-    last_d: f64x4,
-    last_sf: f64x4,
-    dt: f64x4,
-    rating: f64x4,
+    s0: f32x8,
+    d0: f32x8,
+    sf0: f32x8,
+    last_s: f32x8,
+    last_d: f32x8,
+    last_sf: f32x8,
+    dt: f32x8,
+    rating: f32x8,
     nth0: bool,
     curve: Curve4,
     slow: Stab4,
     fast: Stab4,
-    nd_out_pre: f64x4,
-    nd_delta_d: f64x4,
-    ns3: f64x4,
-    nsf3: f64x4,
+    nd_out_pre: f32x8,
+    nd_delta_d: f32x8,
+    ns3: f32x8,
+    nsf3: f32x8,
 }
 
-fn step4_fwd(w: &WLanes, delta_t: f64x4, rating: f64x4, state: (f64x4, f64x4, f64x4), nth0: bool, s_min: f64) -> ((f64x4, f64x4, f64x4), Step4) {
+fn step4_fwd(w: &WLanes, delta_t: f32x8, rating: f32x8, state: (f32x8, f32x8, f32x8), nth0: bool, s_min: f64) -> ((f32x8, f32x8, f32x8), Step4) {
     let (s0, d0, sf0) = state;
     let last_s = clamp4(s0, s_min, S_MAX);
     let last_d = clamp4(d0, D_MIN, D_MAX);
@@ -329,7 +330,7 @@ fn step4_fwd(w: &WLanes, delta_t: f64x4, rating: f64x4, state: (f64x4, f64x4, f6
     (out, cache)
 }
 
-fn step4_bwd(w: &WLanes, c: &Step4, g_out: (f64x4, f64x4, f64x4), gw: &mut [f64x4; NP], s_min: f64) -> (f64x4, f64x4, f64x4) {
+fn step4_bwd(w: &WLanes, c: &Step4, g_out: (f32x8, f32x8, f32x8), gw: &mut [f32x8; NP], s_min: f64) -> (f32x8, f32x8, f32x8) {
     let z = sp(0.0);
     let (g_ns_out, g_nd_out, g_nsf_out) = g_out;
     let g_ns3 = (c.ns3.cmp_gt(sp(s_min)) & c.ns3.cmp_lt(sp(S_MAX))).blend(g_ns_out, z);
@@ -378,23 +379,23 @@ fn step4_bwd(w: &WLanes, c: &Step4, g_out: (f64x4, f64x4, f64x4), gw: &mut [f64x
 
 // ===================== per-lane weights (splatted) =====================
 
-/// The 34 params + hoisted loop-invariants, each splatted to all 4 lanes (params are shared
+/// The 34 params + hoisted loop-invariants, each splatted to all 8 lanes (params are shared
 /// across lanes — only the per-row data differs).
 pub struct WLanes {
-    w: [f64x4; NP],
-    ln_w25: f64x4,
-    ln_w26: f64x4,
-    aa7: f64x4,
-    aa16: f64x4,
-    init: f64x4,
-    exp3w5: f64x4,
+    w: [f32x8; NP],
+    ln_w25: f32x8,
+    ln_w26: f32x8,
+    aa7: f32x8,
+    aa16: f32x8,
+    init: f32x8,
+    exp3w5: f32x8,
     // Long-term decay block — depends only on w24/w26 (NOT per-step state), so hoisted out of the
-    // per-timestep curve. Computed once via the same f64×4 ops the per-step path used ⇒ byte-identical.
-    m2: f64x4,
-    decay2: f64x4,
-    inv2: f64x4,
-    p28: f64x4,
-    factor2: f64x4,
+    // per-timestep curve. Computed once via the same f32×8 ops the per-step path used ⇒ byte-identical.
+    m2: f32x8,
+    decay2: f32x8,
+    inv2: f32x8,
+    p28: f32x8,
+    factor2: f32x8,
 }
 
 impl WLanes {
@@ -422,7 +423,7 @@ impl WLanes {
     }
     /// `init_s = w[rc-1]` selected per lane by the (clamped) rating `rc ∈ {1,2,3,4}`.
     #[inline]
-    fn init_s_by_rating(&self, rc: f64x4) -> f64x4 {
+    fn init_s_by_rating(&self, rc: f32x8) -> f32x8 {
         let mut out = self.w[0];
         out = rc.cmp_eq(sp(2.0)).blend(self.w[1], out);
         out = rc.cmp_eq(sp(3.0)).blend(self.w[2], out);
@@ -431,7 +432,7 @@ impl WLanes {
     }
     /// Accumulate `g` into the per-rating init weight gw[rc-1] (lane-selected).
     #[inline]
-    fn accum_init_s_grad(&self, rc: f64x4, g: f64x4, gw: &mut [f64x4; NP]) {
+    fn accum_init_s_grad(&self, rc: f32x8, g: f32x8, gw: &mut [f32x8; NP]) {
         let z = sp(0.0);
         gw[0] += rc.cmp_eq(sp(1.0)).blend(g, z);
         gw[1] += rc.cmp_eq(sp(2.0)).blend(g, z);
@@ -440,7 +441,7 @@ impl WLanes {
     }
 }
 
-// ===================== group-of-4 gradient driver =====================
+// ===================== group-of-8 gradient driver =====================
 
 /// One per-prefix row's data needed to build a lane.
 struct LaneRow<'a> {
@@ -451,7 +452,7 @@ struct LaneRow<'a> {
     weight: f64,
 }
 
-/// Accumulate d(Σ weight·BCE)/dw for up to 4 per-prefix rows (one per lane) into the scalar `gw`.
+/// Accumulate d(Σ weight·BCE)/dw for up to 8 per-prefix rows (one per lane) into the scalar `gw`.
 /// `s_min` is the stability floor. Rows must have `pos ≥ 1` (the recurrence runs ≥1 step).
 fn grad_group(wl: &WLanes, lanes: &[LaneRow], s_min: f64, gw: &mut [f64], caches: &mut Vec<Step4>) {
     caches.clear();
@@ -459,30 +460,30 @@ fn grad_group(wl: &WLanes, lanes: &[LaneRow], s_min: f64, gw: &mut [f64], caches
     let max_steps = lanes.iter().map(|l| l.prior_r.len()).max().unwrap_or(0);
     debug_assert!(max_steps >= 1);
     // Final-prediction lane arrays (dummy lanes default to weight 0 ⇒ no gradient).
-    let mut cur_dt_a = [1.0f64; 4];
-    let mut y_a = [0.0f64; 4];
-    let mut w_a = [0.0f64; 4];
+    let mut cur_dt_a = [1.0f32; 8];
+    let mut y_a = [0.0f32; 8];
+    let mut w_a = [0.0f32; 8];
     for (l, lane) in lanes.iter().enumerate() {
-        cur_dt_a[l] = lane.cur_dt;
-        y_a[l] = lane.y;
-        w_a[l] = lane.weight;
+        cur_dt_a[l] = lane.cur_dt as f32;
+        y_a[l] = lane.y as f32;
+        w_a[l] = lane.weight as f32;
     }
-    let cur_dt = f64x4::from(cur_dt_a);
-    let y = f64x4::from(y_a);
-    let weight = f64x4::from(w_a);
+    let cur_dt = f32x8::from(cur_dt_a);
+    let y = f32x8::from(y_a);
+    let weight = f32x8::from(w_a);
 
     // forward — build each step's dt / rating (rating==0 = padding) inline, no per-step alloc.
     let mut state = (sp(0.0), sp(0.0), sp(0.0));
     for t in 0..max_steps {
-        let mut dt_a = [0.0f64; 4];
-        let mut rt_a = [0.0f64; 4];
+        let mut dt_a = [0.0f32; 8];
+        let mut rt_a = [0.0f32; 8];
         for (l, lane) in lanes.iter().enumerate() {
             if t < lane.prior_r.len() {
-                dt_a[l] = lane.prior_dt[t];
-                rt_a[l] = lane.prior_r[t] as f64;
+                dt_a[l] = lane.prior_dt[t] as f32;
+                rt_a[l] = lane.prior_r[t] as f32;
             }
         }
-        let (ns, cache) = step4_fwd(wl, f64x4::from(dt_a), f64x4::from(rt_a), state, t == 0, s_min);
+        let (ns, cache) = step4_fwd(wl, f32x8::from(dt_a), f32x8::from(rt_a), state, t == 0, s_min);
         state = ns;
         caches.push(cache);
     }
@@ -494,7 +495,7 @@ fn grad_group(wl: &WLanes, lanes: &[LaneRow], s_min: f64, gw: &mut [f64], caches
     let in_range = r_raw.cmp_gt(sp(MIN_R)) & r_raw.cmp_lt(sp(MAX_R));
     let g_rraw = in_range.blend(g_r, sp(0.0));
 
-    let mut gw4: [f64x4; NP] = [sp(0.0); NP];
+    let mut gw4: [f32x8; NP] = [sp(0.0); NP];
     let (mut g_s, mut g_sf, mut g_d) = curve4_bwd(wl, &fc, cur_dt, s, sf, d, g_rraw, sp(0.0), &mut gw4);
     for t in (0..max_steps).rev() {
         let (gs, gd, gsf) = step4_bwd(wl, &caches[t], (g_s, g_d, g_sf), &mut gw4, s_min);
@@ -503,7 +504,7 @@ fn grad_group(wl: &WLanes, lanes: &[LaneRow], s_min: f64, gw: &mut [f64], caches
         g_sf = gsf;
     }
     for k in 0..NP {
-        gw[k] += gw4[k].reduce_add();
+        gw[k] += gw4[k].reduce_add() as f64;
     }
 }
 
@@ -511,7 +512,7 @@ fn grad_group(wl: &WLanes, lanes: &[LaneRow], s_min: f64, gw: &mut [f64], caches
 /// Rows with `pos==0` (empty prefix) are returned in `scalar_fallback` for the caller to handle
 /// via the scalar path; everything else is done 4-wide. Accumulates into `gw` (length NP).
 pub fn grad_simd(ds: &Dataset, rows: &[Row], weights: &[f64], idx: &[usize], wl: &WLanes, s_min: f64, gw: &mut [f64], scalar_fallback: &mut Vec<usize>) {
-    // Sort the batch by prefix length (pos) so each group of 4 has near-equal length (minimal
+    // Sort the batch by prefix length (pos) so each group of 8 has near-equal length (minimal
     // padding). pos==0 rows split off to the scalar path.
     let mut order: Vec<usize> = Vec::with_capacity(idx.len());
     for &i in idx {
@@ -524,10 +525,10 @@ pub fn grad_simd(ds: &Dataset, rows: &[Row], weights: &[f64], idx: &[usize], wl:
     order.sort_by_key(|&i| rows[i].pos);
     // Scratch buffers reused across all groups (one alloc per `grad_simd` call, not per group).
     let mut caches: Vec<Step4> = Vec::new();
-    let mut lanes: Vec<LaneRow> = Vec::with_capacity(4);
+    let mut lanes: Vec<LaneRow> = Vec::with_capacity(8);
     let mut g = 0usize;
     while g < order.len() {
-        let end = (g + 4).min(order.len());
+        let end = (g + 8).min(order.len());
         lanes.clear();
         for &i in &order[g..end] {
             let row = &rows[i];
@@ -552,7 +553,7 @@ mod tests {
 
     #[test]
     fn simd_grad_matches_scalar_grad() {
-        // Several rows of varying prefix length -> a single group of 4 + tail.
+        // Several rows of varying prefix length -> a single group of 8 (fits in one f32x8 lane set).
         let card_dt: Vec<f64> = vec![0.0, 0.3, 9.0, 1.5, 30.0, 0.02, 100.0, 5.0, 2.0, 14.0];
         let card_r: Vec<i64> = vec![3, 1, 3, 4, 2, 1, 3, 2, 4, 3];
         let positions = [1usize, 2, 4, 5, 7, 9];
@@ -589,14 +590,20 @@ mod tests {
         let mut caches: Vec<Step4> = Vec::new();
         let mut g0 = 0;
         while g0 < lane_rows.len() {
-            let end = (g0 + 4).min(lane_rows.len());
+            let end = (g0 + 8).min(lane_rows.len());
             grad_group(&wl, &lane_rows[g0..end], s_min, &mut g_simd, &mut caches);
             g0 = end;
         }
 
         for k in 0..NP {
             let diff = (g_simd[k] - g_scalar[k]).abs();
-            let tol = 1e-7 + 1e-7 * g_scalar[k].abs();
+            // The SIMD path is genuine f32 (hardware f32x8); the scalar reference is f32 by
+            // default (libm exp/ln rounded to f32) or f64 under the `fp64` feature. Either way
+            // they agree only to ~f32 ulp accumulated over the recurrence (wide's Cephes f32
+            // transcendentals vs libm), so the tolerance is f32-level. The fwd/bwd formulas are
+            // unchanged from the verified f64×4 port, so a porting bug would diverge by O(|g|)
+            // ≫ this band.
+            let tol = 5e-3 + 5e-3 * g_scalar[k].abs();
             assert!(diff < tol, "param {k}: simd {} vs scalar {} (diff {diff:e})", g_simd[k], g_scalar[k]);
         }
     }

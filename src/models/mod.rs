@@ -35,6 +35,7 @@ pub mod rmse_bins_exploit;
 pub mod sm2;
 pub mod sm2_trainable;
 
+use crate::autodiff::round_scalar as r;
 use crate::eval::Params;
 use crate::features::Row;
 
@@ -53,8 +54,8 @@ pub(crate) fn recency_weights(n: usize, recency: bool) -> Vec<f64> {
     }
     (0..n)
         .map(|k| {
-            let x = if n <= 1 { 0.0 } else { k as f64 / (n as f64 - 1.0) };
-            0.25 + 0.75 * x * x * x
+            let x = if n <= 1 { 0.0 } else { r(k as f64 / (n as f64 - 1.0)) };
+            r(0.25 + 0.75 * r(r(x * x) * x))
         })
         .collect()
 }
@@ -67,6 +68,6 @@ pub(crate) fn recency_weights_fsrs7(n: usize, recency: bool) -> Vec<f64> {
     }
     let denom = n.max(1) as f64;
     (0..n)
-        .map(|k| 0.0667 + 0.9333 * (k as f64 / denom).powf(11.25))
+        .map(|k| r(0.0667 + 0.9333 * r((r(k as f64 / denom)).powf(11.25))))
         .collect()
 }

@@ -214,6 +214,7 @@ pub fn process(ds: &Dataset, cfg: &Config) -> ModelOutput {
 mod tests {
     use super::*;
 
+    #[cfg(feature = "fp64")] // finite-diff (h=1e-6) needs f64; f32 rounding noise dominates
     #[test]
     fn fsrs3_grad_matches_finite_difference() {
         // Recurrence over a small synthetic prior sequence, both branches exercised.

@@ -249,6 +249,7 @@ pub fn process(ds: &Dataset, cfg: &Config) -> ModelOutput {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(feature = "fp64")] // finite-diff (h=1e-6) needs f64; f32 rounding noise dominates
     #[test]
     fn fsrs5_grad_matches_finite_difference() {
         // include a short-term (delta_t<1) step to exercise that branch.

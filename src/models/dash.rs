@@ -2,6 +2,7 @@
 //! Well-behaved (bounded sigmoid output, bounded gradient).
 
 use super::{recency_weights, ModelOutput};
+use crate::autodiff::round_scalar as r;
 use crate::config::Config;
 use crate::eval::Params;
 use crate::features::{Dataset, Row};
@@ -27,10 +28,10 @@ fn dash_features(prior_ratings: &[i64], intervals: &[f64], decay: bool) -> [f64;
     for (j, &w) in windows.iter().enumerate() {
         for k in 0..n {
             if cum[k] <= w {
-                let df = if decay { (-cum[k] / tau_w[j]).exp() } else { 1.0 };
-                f[2 * j] += df;
+                let df = if decay { r((-cum[k] / tau_w[j]).exp()) } else { 1.0 };
+                f[2 * j] = r(f[2 * j] + df);
                 if prior_ratings[k] > 1 {
-                    f[2 * j + 1] += df;
+                    f[2 * j + 1] = r(f[2 * j + 1] + df);
                 }
             }
         }
@@ -80,7 +81,7 @@ impl Dash {
     fn z(&self, w: &[f64], i: usize) -> f64 {
         let mut z = w[8];
         for k in 0..8 {
-            z += w[k] * (self.feat[i][k] + 1.0).ln();
+            z = r(z + r(w[k] * r((self.feat[i][k] + 1.0).ln())));
         }
         z
     }
@@ -107,20 +108,20 @@ impl BatchModel for Dash {
     }
     fn predict(&self, params: &[f64], idx: &[usize]) -> Vec<f64> {
         idx.iter()
-            .map(|&i| 1.0 / (1.0 + (-self.z(params, i)).exp()))
+            .map(|&i| r(1.0 / r(1.0 + r((-self.z(params, i)).exp()))))
             .collect()
     }
     fn grad(&self, params: &[f64], idx: &[usize]) -> Vec<f64> {
         let mut g = vec![0.0f64; 9];
         for &i in idx {
-            let p = 1.0 / (1.0 + (-self.z(params, i)).exp());
-            let pq = p * (1.0 - p);
+            let p = r(1.0 / r(1.0 + r((-self.z(params, i)).exp())));
+            let pq = r(p * (1.0 - p));
             // torch: grad_z = (p-y)/clamp(pq,1e-12) * pq  (≈ p-y for non-extreme p)
-            let grad_z = self.wv[i] * (p - self.yv[i]) / pq.max(1e-12) * pq;
+            let grad_z = r(r(r(self.wv[i] * (p - self.yv[i])) / pq.max(1e-12)) * pq);
             for k in 0..8 {
-                g[k] += grad_z * (self.feat[i][k] + 1.0).ln();
+                g[k] = r(g[k] + r(grad_z * r((self.feat[i][k] + 1.0).ln())));
             }
-            g[8] += grad_z;
+            g[8] = r(g[8] + grad_z);
         }
         g
     }
@@ -173,6 +174,7 @@ mod tests {
         -(y * pc.ln() + (1.0 - y) * (1.0 - pc).ln())
     }
 
+    #[cfg(feature = "fp64")] // finite-diff (h=1e-6) needs f64; f32 rounding noise dominates
     #[test]
     fn dash_grad_matches_finite_difference() {
         let feat = vec![

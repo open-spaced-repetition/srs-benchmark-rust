@@ -11,6 +11,7 @@
 //! the `--equalize_test_with_non_secs` variant is not yet supported.
 
 use super::ModelOutput;
+use crate::autodiff::round_scalar as r;
 use crate::config::Config;
 use crate::eval::Params;
 use crate::features::Dataset;
@@ -33,11 +34,11 @@ const STD: [f64; NF] = [
 
 #[inline]
 fn transform_elapsed(x: f64) -> f64 {
-    ((x + 1e-5).ln() + 1.3) / 5.0
+    r((r(r((x + 1e-5).ln()) + 1.3)) / 5.0)
 }
 #[inline]
 fn log1p(x: f64) -> f64 {
-    (1.0 + x).ln()
+    r((1.0 + x).ln())
 }
 
 /// Compute the 34 features for every row, aligned with `ds.rows`. Mirrors
@@ -82,16 +83,16 @@ fn compute_features(ds: &Dataset) -> Vec<[f64; NF]> {
             let not_first = if is_first { 0.0 } else { 1.0 };
             // feature_rating = full-sequence prior rating; feat_elapsed = surviving prior.
             let pos = row.pos as usize;
-            let r = if pos > 0 { card_ratings[pos - 1] } else { 0 };
+            let rt = if pos > 0 { card_ratings[pos - 1] } else { 0 };
             let prev = if is_first { None } else { Some(&rows[idxs[j - 1]]) };
             let feat_elapsed_real = prev.map(|p| p.delta_t).unwrap_or(0.0); // prior surviving delta_t_secs
             let feat_elapsed_int = prev.map(|p| p.elapsed_days.max(0)).unwrap_or(0); // prior surviving delta_t_int
 
             let same_day = if feat_elapsed_int == 0 { 1.0 } else { 0.0 };
-            let success = if r > 1 { 1.0 } else { 0.0 };
-            let fail = if r == 1 { 1.0 } else { 0.0 };
-            let is_hard = if r == 2 { 1.0 } else { 0.0 };
-            let better_than_hard = if r > 2 { 1.0 } else { 0.0 };
+            let success = if rt > 1 { 1.0 } else { 0.0 };
+            let fail = if rt == 1 { 1.0 } else { 0.0 };
+            let is_hard = if rt == 2 { 1.0 } else { 0.0 };
+            let better_than_hard = if rt > 2 { 1.0 } else { 0.0 };
 
             let label_int = row.elapsed_days.max(0); // current delta_t_int
             let label_real = row.delta_t; // current delta_t_secs
@@ -99,8 +100,8 @@ fn compute_features(ds: &Dataset) -> Vec<[f64; NF]> {
 
             // rating one-hot (classes 0,1,2 = ratings 2,3,4), zeroed when r<=1.
             let mut rating_oh = [0.0f64; 3];
-            if r > 1 {
-                let c = ((r - 2).clamp(0, 2)) as usize;
+            if rt > 1 {
+                let c = ((rt - 2).clamp(0, 2)) as usize;
                 rating_oh[c] = 1.0;
             }
 
@@ -168,7 +169,7 @@ fn compute_features(ds: &Dataset) -> Vec<[f64; NF]> {
 
             let f = &mut feats[i];
             for k in 0..10 {
-                f[k] = deg1[k] * v;
+                f[k] = r(deg1[k] * v);
             }
             for k in 0..24 {
                 f[10 + k] = deg0[k];
@@ -193,8 +194,8 @@ fn train(feats: &[[f64; NF]], y: &[f64]) -> [f64; NF] {
     // recency weights 0.1 + 0.9 x^4
     let weights: Vec<f64> = (0..b)
         .map(|i| {
-            let x = if b <= 1 { 0.0 } else { i as f64 / (b as f64 - 1.0) };
-            0.1 + 0.9 * x.powi(4)
+            let x = if b <= 1 { 0.0 } else { r(i as f64 / (b as f64 - 1.0)) };
+            r(0.1 + 0.9 * r(x.powi(4)))
         })
         .collect();
 
@@ -218,35 +219,35 @@ fn train(feats: &[[f64; NF]], y: &[f64]) -> [f64; NF] {
             // coefficients = coef_res*std + mean
             let mut coef = [0.0f64; NF];
             for k in 0..NF {
-                coef[k] = coef_res[k] * STD[k] + MEAN[k];
+                coef[k] = r(r(coef_res[k] * STD[k]) + MEAN[k]);
             }
             // gradient of sum(weight * BCE_with_logits(x·coef, y)) w.r.t. coef_res.
             // dL/dlogit = weight*(sigmoid(logit) - y); dlogit/dcoef_k = x_k; dcoef_k/dcoef_res_k = std_k.
             let mut grad = [0.0f64; NF];
-            for &r in &perm[start..end] {
-                let x = &feats[r];
+            for &ri in &perm[start..end] {
+                let x = &feats[ri];
                 let mut logit = 0.0;
                 for k in 0..NF {
-                    logit += x[k] * coef[k];
+                    logit = r(logit + r(x[k] * coef[k]));
                 }
-                let p = 1.0 / (1.0 + (-logit).exp());
-                let dl = weights[r] * (p - y[r]);
+                let p = r(1.0 / r(1.0 + r((-logit).exp())));
+                let dl = r(weights[ri] * (p - y[ri]));
                 for k in 0..NF {
-                    grad[k] += dl * x[k] * STD[k];
+                    grad[k] = r(grad[k] + r(r(dl * x[k]) * STD[k]));
                 }
             }
             // cosine lr for this step
-            let lr = lr0 * 0.5 * (1.0 + (std::f64::consts::PI * step / t_max).cos());
+            let lr = r(lr0 * 0.5 * r(1.0 + r((std::f64::consts::PI * step / t_max).cos())));
             t += 1.0;
-            let bc1 = 1.0 - b1.powf(t);
-            let bc2 = 1.0 - b2.powf(t);
+            let bc1 = r(1.0 - b1.powf(t));
+            let bc2 = r(1.0 - b2.powf(t));
             for k in 0..NF {
-                m[k] = b1 * m[k] + (1.0 - b1) * grad[k];
-                v[k] = b2 * v[k] + (1.0 - b2) * grad[k] * grad[k];
-                let mhat = m[k] / bc1;
-                let vhat = v[k] / bc2;
+                m[k] = r(b1 * m[k] + r((1.0 - b1) * grad[k]));
+                v[k] = r(b2 * v[k] + r(r((1.0 - b2) * grad[k]) * grad[k]));
+                let mhat = r(m[k] / bc1);
+                let vhat = r(v[k] / bc2);
                 // AdamW: decoupled weight decay on the parameter (coef_res).
-                coef_res[k] -= lr * (mhat / (vhat.sqrt() + eps) + wd * coef_res[k]);
+                coef_res[k] = r(coef_res[k] - r(lr * r(r(mhat / r(r(vhat.sqrt()) + eps)) + r(wd * coef_res[k]))));
             }
             step += 1.0;
             start = end;
@@ -255,7 +256,7 @@ fn train(feats: &[[f64; NF]], y: &[f64]) -> [f64; NF] {
 
     let mut coef = [0.0f64; NF];
     for k in 0..NF {
-        coef[k] = coef_res[k] * STD[k] + MEAN[k];
+        coef[k] = r(r(coef_res[k] * STD[k]) + MEAN[k]);
     }
     coef
 }
@@ -273,10 +274,10 @@ pub fn process(ds: &Dataset, cfg: &Config) -> ModelOutput {
         let x = &feats[i];
         let mut logit = 0.0;
         for k in 0..NF {
-            logit += x[k] * coef[k];
+            logit = r(logit + r(x[k] * coef[k]));
         }
         eval_rows.push(rows[i].clone());
-        p.push(1.0 / (1.0 + (-logit).exp()));
+        p.push(r(1.0 / r(1.0 + r((-logit).exp()))));
     };
 
     if let Some(splits) = &ds.equalize_splits {

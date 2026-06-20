@@ -31,7 +31,7 @@ impl Adam {
     }
 
     /// One Adam step with an explicit learning rate (set by the cosine schedule).
-    /// Under the `fp32` feature every result is rounded to f32 (mirrors torch's f32 Adam).
+    /// By default every result is rounded to f32 (mirrors torch's f32 Adam); `fp64` disables it.
     pub fn step(&mut self, params: &mut [f64], grad: &[f64], lr: f64) {
         self.t += 1.0;
         let bc1 = r(1.0 - self.b1.powf(self.t));

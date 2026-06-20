@@ -2,6 +2,7 @@
 //! stability = 2^(w0·√#success + w1·√#fail + bias); retention = 0.5^(delta_t/stability).
 
 use super::{recency_weights, ModelOutput};
+use crate::autodiff::round_scalar as r;
 use crate::config::Config;
 use crate::eval::Params;
 use crate::features::{Dataset, Row};
@@ -58,9 +59,11 @@ impl Hlr {
 
     #[inline]
     fn p_row(&self, w: &[f64], i: usize) -> f64 {
-        let d = w[0] * self.x0[i] + w[1] * self.x1[i] + w[2];
-        let s = (LN2 * d).exp(); // 2^d
-        (-LN2 * self.dt[i] / s).exp() // 0.5^(dt/s)
+        // fc(x)=w0*x0+w1*x1+b, then 2^d, then 0.5^(t/s). Round each op to mimic torch's f32
+        // forward (the default); a no-op under the `fp64` feature.
+        let d = r(r(r(w[0] * self.x0[i]) + r(w[1] * self.x1[i])) + w[2]);
+        let s = r(2.0f64.powf(d)); // 2^d
+        r(0.5f64.powf(r(self.dt[i] / s))) // 0.5^(t/s)
     }
 }
 
@@ -90,17 +93,17 @@ impl BatchModel for Hlr {
         let ln2sq = LN2 * LN2;
         let mut g = [0.0f64; 3];
         for &i in idx {
-            let d = params[0] * self.x0[i] + params[1] * self.x1[i] + params[2];
-            let s = (LN2 * d).exp();
-            let a = self.dt[i] / s;
-            let p = (-LN2 * a).exp();
+            let d = r(r(r(params[0] * self.x0[i]) + r(params[1] * self.x1[i])) + params[2]);
+            let s = r(2.0f64.powf(d));
+            let a = r(self.dt[i] / s);
+            let p = r(0.5f64.powf(a));
             // torch BCELoss backward: dBCE/dp = (p-y)/max(p*(1-p), 1e-12); then dp/dd =
             // p*ln2^2*a. (For non-extreme p this equals (p-y)*ln2^2*a/(1-p).)
-            let denom = (p * (1.0 - p)).max(1e-12);
-            let gd = self.wv[i] * (p - self.yv[i]) / denom * p * ln2sq * a;
-            g[0] += gd * self.x0[i];
-            g[1] += gd * self.x1[i];
-            g[2] += gd;
+            let denom = r((p * (1.0 - p)).max(1e-12));
+            let gd = r(r(r(self.wv[i] * (p - self.yv[i])) / denom) * r(p * ln2sq * a));
+            g[0] = r(g[0] + r(gd * self.x0[i]));
+            g[1] = r(g[1] + r(gd * self.x1[i]));
+            g[2] = r(g[2] + gd);
         }
         g.to_vec()
     }
@@ -151,6 +154,7 @@ mod tests {
         -(y * pc.ln() + (1.0 - y) * (1.0 - pc).ln())
     }
 
+    #[cfg(feature = "fp64")] // finite-diff (h=1e-6) needs f64; f32 rounding noise dominates
     #[test]
     fn hlr_grad_matches_finite_difference() {
         let x0 = vec![1.0, 1.4142135, 2.0, 0.0, 1.7320508];

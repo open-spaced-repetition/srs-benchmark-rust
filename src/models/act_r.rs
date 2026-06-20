@@ -162,6 +162,7 @@ pub fn process(ds: &Dataset, cfg: &Config) -> ModelOutput {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(feature = "fp64")] // finite-diff (h=1e-6) needs f64; f32 rounding noise dominates
     #[test]
     fn actr_grad_matches_finite_difference() {
         let dt_incl = [0.0, 1.0, 7.0, 0.5, 20.0];

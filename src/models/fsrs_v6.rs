@@ -317,6 +317,7 @@ fn process_partitioned(ds: &Dataset, cfg: &Config, tc: &TrainConfig, default_dec
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(feature = "fp64")] // finite-diff (h=1e-6) needs f64; f32 rounding noise dominates
     #[test]
     fn fsrs6_grad_matches_finite_difference() {
         let prior_dt = [0.0, 0.3, 9.0, 1.5, 30.0];

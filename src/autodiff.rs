@@ -8,16 +8,29 @@
 //!
 //! Processing is per-row (scalar): `where`/`min`/`max` become ordinary `if`s.
 
-/// Round to f32 precision after each op when the `fp32` feature is on (mimics torch's f32
-/// arithmetic); a no-op for the default f64 build. For IEEE elementary ops, computing in f64
-/// then rounding to f32 yields exactly the f32 result, so this faithfully emulates f32.
+/// Per-algo precision flag (set once in `run.rs` before processing). `true` ⇒ `round_scalar`
+/// rounds to f32 (analytic / reverse-mode-gradient algos: HLR, DASH, LogReg, FSRS-7, …, matching
+/// torch's f32). `false` ⇒ no-op f64 (forward-mode-`Dual` algos: FSRS v1–v6, v4.5, ACT-R, Anki,
+/// DASH[ACT-R], SM2-trainable). Those models' forward-mode gradient is only a faithful proxy for
+/// torch's f32 *reverse-mode* in f64 (it matched upstream in the all-f64 era); a *f32* forward-mode
+/// gradient rounds differently and diverges badly on chaotic `--secs` training. Default `true`
+/// (the common case + unit tests). Forced f64 (no-op) under the opt-in `fp64` feature.
+pub(crate) static ROUND_F32: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+
+/// Round to f32 when the current algo is f32-precision (see `ROUND_F32`); else a no-op (f64). For
+/// IEEE elementary ops, computing in f64 then rounding to f32 yields exactly the f32 result, so
+/// this faithfully emulates f32 for the analytic algos that need it to match the f32 references.
 #[inline(always)]
 pub(crate) fn round_scalar(x: f64) -> f64 {
-    #[cfg(feature = "fp32")]
+    #[cfg(not(feature = "fp64"))]
     {
-        x as f32 as f64
+        if ROUND_F32.load(std::sync::atomic::Ordering::Relaxed) {
+            x as f32 as f64
+        } else {
+            x
+        }
     }
-    #[cfg(not(feature = "fp32"))]
+    #[cfg(feature = "fp64")]
     {
         x
     }
@@ -42,6 +55,10 @@ impl<const P: usize> Dual<P> {
         Dual { v: r(v), g }
     }
 
+    // All ops round via `r` (= `round_scalar`), which is f32 for analytic/reverse-mode algos and
+    // a no-op (f64) for forward-mode-`Dual` algos — the per-algo `ROUND_F32` flag, set in run.rs.
+    // (Forward-mode autodiff is only a faithful proxy for torch's reverse-mode gradient in f64;
+    // f32 forward-mode diverges badly on chaotic `--secs` training, so those algos run f64.)
     pub fn add(self, o: Self) -> Self {
         let mut g = self.g;
         for k in 0..P {
@@ -184,6 +201,7 @@ impl<const P: usize> Dual<P> {
 mod tests {
     use super::*;
 
+    #[cfg(feature = "fp64")] // finite-diff (h=1e-6) needs f64; f32 rounding noise dominates
     #[test]
     fn dual_grad_matches_finite_difference() {
         // f(w) = clamp( exp(w0) * (w1+1)^w2 / (w0+2), 0.01, 100 )  +  min(w1, w2*3)

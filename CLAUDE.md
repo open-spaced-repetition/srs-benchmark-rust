@@ -150,15 +150,35 @@ Fixing the clamp made FSRSv1 plain pass (+0.000947 → +0.000445) and pulled the
 family's short-secs diffs from ~−0.002 toward ~0 (closer to torch). The `fp32` experiment was
 what ruled out precision and forced finding this — the divergence was structural, not f32-vs-f64.
 
-**`fp32` build feature (2026-06-08, kept):** `cargo build --features fp32` rounds every
-autodiff + Adam result to f32 (mimics torch); default is f64 (no-op). Experiment showed f32
-does NOT meaningfully change FSRS results (plain configs use f32-exact integer intervals).
-Keep f64 as default. `autodiff::round_scalar` is the toggle.
+**⚠ PRECISION: PER-ALGO f32/f64 (Andrew, 2026-06-19) — supersedes the f64-everywhere note below.**
+`autodiff::round_scalar` (alias `r`) rounds to f32 iff the static `autodiff::ROUND_F32` flag is set
+(no-op = f64 otherwise); `run.rs::run` sets it per-algo via `algo_uses_f64()`. Build f64-everywhere
+with `cargo build --release --features fp64` (forces no-op). Rationale — **"use the precision that
+reproduces upstream"**:
+- **f32 algos** (analytic / reverse-mode gradients, + non-trained): HLR, DASH, DASH[MCM], LogReg,
+  FSRS-7, AVG/SM2/MOVING-AVG/Ebisu/RMSE-BINS/FSRS-rs. f32 matches torch (e.g. `HLR --short --secs`
+  was −0.0058 in f64, ±0 in f32). FSRS-7 is genuinely f32 incl. its `f32x8` SIMD.
+- **f64 algos** (`algo_uses_f64`: forward-mode `Dual`): ACT-R, Anki, DASH[ACT-R], FSRS v1–v6, v4.5,
+  FSRS-5, FSRS-6-one-step, SM2-trainable. These compute the gradient with FORWARD-mode autodiff;
+  torch uses REVERSE-mode, and only the **f64 forward-mode** gradient faithfully proxies torch's f32
+  reverse-mode (it matched upstream in the all-f64 era). A *f32* forward-mode gradient rounds
+  differently and **broke** sensitive `--secs` training badly (FSRS-6 --short --secs −0.000142 →
+  −0.019; predict stayed fine, only training diverged on the chaotic trajectory). Verified: full f64
+  reproduces upstream (no bug). So these algos run f64 and keep their already-verified f64 numbers.
 
-**Rule #5 is ONE-SIDED (Andrew 2026-06-07):** PASS iff `mean_rust − mean_upstream ≤
-0.0005`. Lower (better) is always fine — f64 finds slightly better optima than torch f32 on
-chaotic models (extreme `0.9^(t/s)`/`2^d` predictions → a few users amplify f64-vs-f32
-noise), so several read *lower* than upstream. Keep f64 everywhere; do NOT switch to f32.
+(History: a first attempt kept only the Dual *gradient* in f64 while value/Adam stayed f32 — that did
+NOT fix it (−0.019 persisted); the f32 value/Adam on the chaotic trajectory is the cause, so the
+whole algo must be f64.) Tests: `cargo test` runs f32 (ROUND_F32 default true); `cargo test --features
+fp64` adds the finite-difference math checks (gated to fp64 — h=1e-6 is meaningless in f32). *Why f32
+at all:* under the two-sided
+±0.0005 rule, f64's "better" optima on chaotic *analytic* models (`HLR --short --secs` −0.0058)
+count as FAILS (divergence from f32 upstream); f32 reproduces upstream there (→ ±0). f64 can still
+help some algos — hence the opt-in.
+
+**Rule #5 is now TWO-SIDED (Andrew, 2026-06-19) — supersedes the one-sided note below.** PASS iff
+`|mean_rust − mean_upstream| ≤ 0.0005`. Anything outside [−0.0005, +0.0005] (higher OR lower) fails
+and is investigated (a much-lower loss can be a genuine f64-vs-f32 optimum, but it can also hide a
+bug). *(Historical: rule #5 was one-sided 2026-06-07 .. 2026-06-19; f64 was the default then.)*
 
 **VERIFIED (18 models, vs `result_upstream`, `--short --secs`, ALL on the full 1000-user
 basis; size exact per-user + sum for every one):**

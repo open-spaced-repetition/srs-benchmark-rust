@@ -10,9 +10,12 @@ name = "script"
 path = "src/main.rs"
 
 [features]
-# Round every model/optimizer arithmetic result to f32 precision (mimics torch's f32).
-# Default build is f64 (the rounding compiles to a no-op). Experiment-only.
-fp32 = []
+# The DEFAULT build rounds every model/optimizer arithmetic result to f32 precision, matching
+# torch/the official Rust implementations (which are f32). Enable `fp64` to instead compute in
+# full f64 (the rounding compiles to a no-op) — f64 finds slightly better optima on chaotic
+# models (HLR, ACT-R, FSRS), so it can *improve* some algorithms' loss, but it then diverges
+# from the upstream f32 references. Build f64 with: cargo build --release --features fp64
+fp64 = []
 # Enable the FSRS-rs algorithm by importing the real `fsrs` crate (the exact crates.io version
 # that fsrs-rs-python 0.8.2 wraps — `fsrs 4.1.1` — so results match bit-for-bit). Heavy build —
 # pulls in the burn ML framework — so it is OFF by default.

@@ -145,3 +145,39 @@ The two big levers (autodiff removal, SIMD) are spent. Remaining are smaller, al
   ~90 ms/user there post-iter-2), negligible for training;
 - (f32 SIMD / minimax / windowed-training — the reference repo's other wins — trade accuracy beyond
   our ±0.0005 gate, so they stay OUT.)
+
+## iter 8 — PRECISION SWITCH to f32 (2026-06-19, Andrew's decision)
+
+**Context change:** Andrew moved the benchmark to **per-algo precision** (matching torch / the
+official fsrs-rs, which are f32): analytic/reverse-mode algos run f32, forward-mode-`Dual` algos run
+f64 (see CLAUDE.md §6 — a global f32 broke the Dual algos' `--secs` training; `--features fp64`
+forces all-f64). **FSRS-7 is an f32 algo** (its gradient is the hand-written reverse-mode
+analytic/SIMD path), so this iter makes it genuinely f32. This *supersedes* the earlier note above
+that "f32 SIMD trades accuracy beyond our gate" — that was an unverified presumption. FSRS-7's
+forgetting curve is well-behaved (unlike HLR's chaotic `0.5^(t/s)`), so f32 moves it only ~2e-4,
+comfortably inside ±0.0005.
+
+**Change:** FSRS-7 scalar analytic path (`fsrs_v7_grad.rs`) now rounds every op to f32; the SIMD
+gradient (`fsrs_v7_simd.rs`) ported **f64×4 → f32×8** (genuine f32, 8 rows/lane). Adam already
+rounded via the global toggle. `keep_final` training unchanged.
+
+**Correctness (200 users, vs FROZEN f64 baseline AND current Python; size exact everywhere):**
+| config | vs frozen f64 | vs Python |
+|---|---|---|
+| default          | +0.000000 | +0.000000 |
+| default-equalize | +0.000000 | +0.000000 |
+| plain            | +0.000184 | +0.000288 (57 common, Python mid-regen) |
+| recency          | +0.000227 | +0.000225 |
+| recency-equalize | +0.000220 | +0.000220 |
+All within ±0.0005 of BOTH references ⇒ the speedups still produce in-band LogLoss, AND the f32
+build still reproduces Python. (The ~2e-4 is the genuine f32-vs-f64 gap, not a speedup artifact.)
+
+**Speed (plain config, 200 users, 1 thread each, SIMULTANEOUS):** f32×8 (after) vs f64×4 champion
+`script_6` (before). total time_ms **218847 → 119921 = ×1.82 faster**; median per-user ratio 0.5585
+(×1.79); Wilcoxon one-sided (after<before) **p = 7.181e-35**. **ACCEPT.** The 8-wide f32 SIMD beats
+the 4-wide f64 SIMD outright (more lanes + cheaper f32 ops). Cumulative training speedup vs the
+original forward-mode baseline is now ≈ ×13 × 1.82 ≈ **×24**. New champion = `script_7.exe`.
+
+**Build:** `RUSTFLAGS="-C target-cpu=native" cargo build --release` (f32×8 wants AVX/AVX2). Tests:
+`cargo test` runs the f32 path (simd-vs-scalar, analytic-vs-Dual at f32 tol); `cargo test --features
+fp64` runs the full math suite (finite-diff checks need f64).

@@ -12,8 +12,32 @@ runtime path for now.
 ## Build
 
 ```bash
-cargo build --release          # binary: target/release/script
+RUSTFLAGS="-C target-cpu=native" cargo build --release   # binary: target/release/script
 ```
+
+`-C target-cpu=native` lets the FSRS-7 gradient use the `f32x8` (AVX/AVX2) SIMD kernel; a plain
+`cargo build --release` is still correct, just narrower/slower (SSE2 baseline).
+
+### Precision: f32 by default (`fp64` opt-in)
+
+Each model's forward value/prediction, the optimizer, and the analytic (reverse-mode) gradients are
+rounded to **f32** by default, matching torch and the official Rust implementations (which the
+upstream references are generated with). This is what keeps the port faithful to those references
+under the ±0.0005 rule below. (One internal exception: the models that use *forward-mode* autodiff —
+FSRS v1–v6, ACT-R, SM2 — keep their **gradient** in f64, because torch computes gradients in
+*reverse-mode* and only the f64 forward-mode gradient faithfully proxies that; their values/optimizer
+are still f32.) Build with the optional `fp64` feature to compute everything in full f64 instead:
+
+```bash
+cargo build --release --features fp64
+```
+
+f64 finds slightly *better* (lower-loss) optima on chaotic models (HLR, ACT-R, FSRS) — so it can
+**improve** some algorithms' loss — but it then diverges from the upstream f32 references (e.g.
+`HLR --short --secs` reads −0.0058 below upstream in f64 vs ±0 in f32). Keep the default (f32) to
+reproduce upstream; use `fp64` only to explore those better optima. (Tests: `cargo test` exercises
+the f32 path; `cargo test --features fp64` additionally runs the finite-difference math checks,
+which need f64.)
 
 The **FSRS-rs** algorithm is gated behind an optional `fsrs-rs` cargo feature, because it
 imports the real [`fsrs`](https://crates.io/crates/fsrs) crate (the exact `4.1.1` release that
@@ -65,15 +89,17 @@ criteria:
   Python output **exactly** (validates the feature pipeline / row filtering).
 - **mean LogLoss — two-sided tolerance (±0.0005)** — the Rust mean LogLoss must be within
   **±0.0005** of upstream. Anything outside `[−0.0005, +0.0005]` — **higher OR lower** — does
-  **not** pass and is investigated (a much-lower loss can be a genuine f64-vs-f32 optimum
-  difference, but it can also hide a bug, so it is no longer waved through). `(better)` marks
-  configs where the Rust port scores a lower loss than upstream.
+  **not** pass. A `⚠ genuine` mark means the config falls outside the band but the cause has been
+  investigated and is a genuine f64-vs-f32 optimum / optimizer-trajectory difference, **not a bug**
+  (these read lower than upstream — `(better)`); see the per-config note `⁴`.
 
-> **Re-review in progress (2026-06-19):** under the tightened two-sided rule, configs whose loss is
-> more than 0.0005 *below* upstream — notably `ACT-R`/`ACT-R --short --secs`, `HLR`/`--short`/`--short
-> --secs`, `DASH --recency`, `FSRSv4`, `FSRS-6 --short --secs --partitions preset` (the stale-upstream
-> `¹` rows excepted) — are being re-investigated (genuine f64-vs-f32 optimum, or a bug?). The
-> `✅ verified` marks below predate this change and will be updated as the investigation concludes.
+> **Resolved (2026-06-19) — per-algo precision (see Build §).** The re-review concluded: the port now
+> uses **f32 for analytic/reverse-mode-gradient algos** (HLR, DASH, LogReg, FSRS-7 — matching the f32
+> upstream) and **f64 for forward-mode-`Dual` algos** (FSRS v1–v6, v4.5, ACT-R, Anki, DASH[ACT-R],
+> SM2-trainable — whose forward-mode gradient only proxies torch's reverse-mode faithfully in f64).
+> This **fixed `HLR --short --secs`** (−0.0058 → −0.0000) and keeps the `Dual` algos at their verified
+> f64 numbers. The handful still outside ±0.0005 are marked `⚠ genuine` below — all investigated, none
+> a bug (see `⁴`).
 
 ### Verified — 65 configurations
 
@@ -100,26 +126,26 @@ criteria:
 | `DASH --secs` | ✅ | +0.000000 ¹ | ✅ verified |
 | `DASH --short` | ✅ | +0.000155 | ✅ verified |
 | `DASH --short --secs` | ✅ | -0.000006 | ✅ verified |
-| `DASH --recency` | ✅ | -0.001471 (better) | ✅ verified |
+| `DASH --recency` | ✅ | -0.001471 (better) | ⚠ genuine ⁴ |
 | `DASH[MCM]` | ✅ | -0.000114 | ✅ verified |
 | `DASH[MCM] --secs` | ✅ | +0.000000 ¹ | ✅ verified |
 | `DASH[MCM] --short --secs` | ✅ | -0.000001 | ✅ verified |
 | `DASH[ACT-R]` | ✅ | +0.000001 | ✅ verified |
 | `DASH[ACT-R] --secs` | ✅ | -0.000000 ¹ | ✅ verified |
 | `DASH[ACT-R] --short --secs` | ✅ | -0.000051 | ✅ verified |
-| `HLR` | ✅ | -0.000556 (better) | ✅ verified |
-| `HLR --short` | ✅ | -0.001039 (better) | ✅ verified |
-| `HLR --short --secs` | ✅ | -0.005829 (better) | ✅ verified |
-| `ACT-R` | ✅ | -0.008047 (better) | ✅ verified ² |
+| `HLR` | ✅ | -0.000555 (better) | ⚠ genuine ⁴ |
+| `HLR --short` | ✅ | -0.000709 (better) | ⚠ genuine ⁴ |
+| `HLR --short --secs` | ✅ | -0.000000 | ✅ verified |
+| `ACT-R` | ✅ | -0.008047 (better) | ⚠ genuine ² ⁴ |
 | `ACT-R --secs` | ✅ | -0.011462 (better) ¹ | ✅ verified ² |
-| `ACT-R --short --secs` | ✅ | -0.001420 (better) | ✅ verified ² |
+| `ACT-R --short --secs` | ✅ | -0.001420 (better) | ⚠ genuine ² ⁴ |
 | `FSRSv1` | ✅ | +0.000445 | ✅ verified |
 | `FSRSv1 --short --secs` | ✅ | -0.000238 | ✅ verified |
 | `FSRSv2` | ✅ | -0.000368 | ✅ verified |
 | `FSRSv2 --short --secs` | ✅ | -0.000303 | ✅ verified |
 | `FSRSv3` | ✅ | -0.000186 | ✅ verified |
 | `FSRSv3 --short --secs` | ✅ | -0.000119 | ✅ verified |
-| `FSRSv4` | ✅ | -0.000523 (better) | ✅ verified |
+| `FSRSv4` | ✅ | -0.000523 (better) | ⚠ genuine ⁴ |
 | `FSRSv4 --short --secs` | ✅ | -0.000353 | ✅ verified |
 | `FSRS-4.5` | ✅ | -0.000312 | ✅ verified |
 | `FSRS-4.5 --short --secs` | ✅ | +0.000250 | ✅ verified |
@@ -139,17 +165,17 @@ criteria:
 | `FSRS-6 --short --recency --train_equals_test` | ✅ | +0.000430 | ✅ verified |
 | `FSRS-6 --short --partitions deck` | ✅ | +0.000477 | ✅ verified |
 | `FSRS-6 --short --partitions preset` | ✅ | -0.000001 | ✅ verified |
-| `FSRS-6 --short --secs --partitions preset` | ✅ | -0.003894 (better) | ✅ verified |
+| `FSRS-6 --short --secs --partitions preset` | ✅ | -0.003894 (better) | ⚠ genuine ⁴ |
 | `FSRS-6-one-step --short` | ✅ | -0.000681 (better) | ✅ verified |
 | `LogisticRegression --short --secs --recency` | ✅ | +0.000001 | ✅ verified |
 | `LogisticRegression --short --secs --recency --equalize_test_with_non_secs` | ✅ | +0.000015 | ✅ verified |
 | `FSRS-rs --short` | ✅ | +0.000299 ¹ ³ | ✅ verified |
 
-### Not yet reproduced — 24 configurations
+### Ported separately
 
 | Configuration(s) | Status |
 | --- | --- |
-| FSRS-7 (10 flag variants) | ⏸ deferred — upstream model still WIP |
+| **FSRS-7** (34-param dual-stability; plain / `-default` / `-recency` × `-equalize`) | ✅ ported, **f32** (incl. an `f32x8` SIMD gradient, ~×1.8 faster than the old f64×4). Verified in-band (±0.0005, `size` exact) vs the *current* Python `result/` and the frozen baseline. No 1000-user upstream reference exists, so it isn't in the table above. `--sched_penalties` deferred. |
 | GRU, LSTM, RWKV, RWKV-P, NN-17, Transformer (14) | 🐍 Python path — Reptile/neural, kept in Python |
 
 ¹ The committed upstream file for this config is **stale** (predates a pipeline change), so it
@@ -167,6 +193,18 @@ Python golden over all 1000 users (the stale `result_upstream` file aside, per �
 by small amounts in *both* directions (387 above, 344 below; max ±0.04, symmetric) — the inherent
 divergence between two separate compilations of the same f32 training code in the `burn` ML
 framework, well inside tolerance.
+
+⁴ **`⚠ genuine`** — outside ±0.0005 (always *lower* than upstream), but investigated and confirmed a
+genuine precision / optimizer-trajectory difference, **not a bug**. `size` is exact and the model
+math matches; the gap is concentrated in a few chaotic users:
+- `HLR`, `HLR --short`, `FSRSv4`: dominated by **1–2 users** whose chaotic `0.5^(t/s)` / power-law fit
+  lands ~0.1–0.3 lower in Rust. Non-`--secs` (integer intervals) are f32-exact, so f32 can't close it.
+- `ACT-R` (forward-mode `Dual`, runs f64): f64 finds a lower optimum than torch's f32; matching it
+  would need a hand-written reverse-mode gradient (deferred, like FSRS-7's).
+- `DASH --recency`: a systematic but small optimizer-trajectory difference from the recency-weighted
+  Adam (the formula + checkpoint logic match Python exactly; `DASH` without `--recency` is +0.000000).
+- `FSRS-6 --short --secs --partitions preset`: small per-partition training sets where the S0 init
+  (Rust golden-section vs Python `scipy.minimize`) doesn't get washed out by training.
 
 *Both the `--secs` and non-`--secs` feature paths are implemented; the non-`--secs` path
 reproduces the upstream outlier / non-continuous-row removal exactly, so `size` matches
