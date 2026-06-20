@@ -243,8 +243,11 @@ descent from `x0=init_s0`, NOT the golden-section's global min. Added `fit_s0_fr
 descent into a bound returns it) used ONLY by one-step; other fit_s0 models keep the global
 golden-section (Adam re-optimizes S0 there, so it's unaffected — FSRS-6-short still −0.000008).
 Global golden-section gave +0.000493 (a few users blew up: S0=1.3 where scipy floored to
-0.001); local fit → **−0.000681** (better, comfortable margin). `FSRS-6-one-step --short`:
-size exact, LogLoss −0.000681.
+0.001); local fit → **−0.000681** (better). `FSRS-6-one-step --short`: size exact, LogLoss
+−0.000681. NOTE: under the **two-sided** ±0.0005 rule (adopted 2026-06-19, after this was first
+recorded) −0.000681 is OUTSIDE the band, so it's marked **⚠ genuine** in the README — an
+f64-vs-f32 online-SGD-trajectory difference (FSRS-6-one-step is an f64 algo), not a bug; `size` is
+exact by construction. (Under the original one-sided rule "lower is always fine" it read as verified.)
 
 **`--equalize_test_with_non_secs` PORTED + VERIFIED (2026-06-08):** `features::build_equalize_splits`
 + `Dataset::equalize_splits: Option<Vec<EqSplit>>`. Under `--secs --equalize_test_with_non_secs`

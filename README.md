@@ -168,7 +168,7 @@ criteria:
 | `FSRS-6 --short --partitions deck` | ✅ | +0.000477 | ✅ verified |
 | `FSRS-6 --short --partitions preset` | ✅ | -0.000001 | ✅ verified |
 | `FSRS-6 --short --secs --partitions preset` | ✅ | -0.003894 (better) | ⚠ genuine ⁴ |
-| `FSRS-6-one-step --short` | ✅ | -0.000681 (better) | ✅ verified |
+| `FSRS-6-one-step --short` | ✅ | -0.000681 (better) | ⚠ genuine ⁴ |
 | `LogisticRegression --short --secs --recency` | ✅ | +0.000001 | ✅ verified |
 | `LogisticRegression --short --secs --recency --equalize_test_with_non_secs` | ✅ | +0.000015 | ✅ verified |
 | `FSRS-rs --short` | ✅ | +0.000299 ¹ ³ | ✅ verified |
@@ -207,6 +207,9 @@ math matches; the gap is concentrated in a few chaotic users:
   Adam (the formula + checkpoint logic match Python exactly; `DASH` without `--recency` is +0.000000).
 - `FSRS-6 --short --secs --partitions preset`: small per-partition training sets where the S0 init
   (Rust golden-section vs Python `scipy.minimize`) doesn't get washed out by training.
+- `FSRS-6-one-step --short` (online single-pass SGD, runs f64): the tiny-lr online pass + local S0
+  fit land ~0.0007 lower than torch's f32 — an f64-vs-f32 optimizer-trajectory difference, not a bug.
+  `size` is exact by construction (it predicts with stock FSRS-6, so the eval set = FSRS-6-short).
 
 *Both the `--secs` and non-`--secs` feature paths are implemented; the non-`--secs` path
 reproduces the upstream outlier / non-continuous-row removal exactly, so `size` matches
