@@ -13,7 +13,7 @@ use crate::split::time_series_split;
 use crate::train::{self, BatchModel, TrainConfig};
 
 const NP: usize = 13;
-const INIT_W: [f64; NP] = [
+pub const INIT_W: [f64; NP] = [
     0.9605, 1.7234, 4.8527, -1.1917, -1.2956, 0.0573, 1.7352, -0.1673, 1.065, 1.8907, -0.3832,
     0.5867, 1.0721,
 ];
@@ -26,7 +26,9 @@ fn fc<const P: usize>(t: f64, s: Dual<P>) -> Dual<P> {
 
 /// Retention for one review: run the recurrence over the prior reviews, then the forgetting
 /// curve at the current interval. Generic over the gradient width `P`.
-fn retention<const P: usize>(
+/// Forward-mode (`Dual<P>`) recurrence — prediction (`Dual<0>`) + gradient oracle. The training
+/// gradient uses the hand-written reverse-mode VJP in [`super::fsrs_v3_grad`].
+pub fn retention_dual<const P: usize>(
     prior_dt: &[f64],
     prior_r: &[i64],
     cur_dt: f64,
@@ -111,7 +113,7 @@ impl<'a> Fsrs3<'a> {
     }
 
     fn ret<const P: usize>(&self, w: &[Dual<P>; NP], row: &Row) -> Dual<P> {
-        retention(
+        retention_dual(
             self.ds.prior_dt_active(row),
             self.ds.prior_ratings(row),
             row.delta_t,
@@ -146,16 +148,23 @@ impl BatchModel for Fsrs3<'_> {
         idx.iter().map(|&i| self.ret(&wd, &self.rows[i]).v).collect()
     }
     fn grad(&self, params: &[f64], idx: &[usize]) -> Vec<f64> {
-        let wd: [Dual<NP>; NP] = std::array::from_fn(|k| Dual::param(k, params[k]));
+        // Hand-written reverse-mode VJP (f64), ~1 fwd + 1 bwd per row vs forward-mode's ~13×.
+        let wc = super::fsrs_v3_grad::wconsts(params, self.s_min, self.s_max);
         let mut g = vec![0.0f64; NP];
+        let mut caches = Vec::new();
         for &i in idx {
-            let ret = self.ret(&wd, &self.rows[i]);
-            let p = ret.v;
-            let denom = (p * (1.0 - p)).max(1e-12);
-            let dloss_dp = self.weights[i] * (p - self.rows[i].y as f64) / denom;
-            for k in 0..NP {
-                g[k] += dloss_dp * ret.g[k];
-            }
+            let row = &self.rows[i];
+            super::fsrs_v3_grad::grad_one(
+                params,
+                self.ds.prior_dt_active(row),
+                self.ds.prior_ratings(row),
+                row.delta_t,
+                row.y as f64,
+                self.weights[i],
+                &wc,
+                &mut g,
+                &mut caches,
+            );
         }
         g
     }
@@ -227,13 +236,13 @@ mod tests {
 
         let grad = {
             let wd: [Dual<NP>; NP] = std::array::from_fn(|k| Dual::param(k, w0[k]));
-            let r = retention(&prior_dt, &prior_r, cur_dt, &wd, s_min, s_max);
+            let r = retention_dual(&prior_dt, &prior_r, cur_dt, &wd, s_min, s_max);
             // d(retention)/dw
             r.g
         };
         let val = |w: [f64; NP]| -> f64 {
             let wd: [Dual<0>; NP] = std::array::from_fn(|k| Dual::c(w[k]));
-            retention(&prior_dt, &prior_r, cur_dt, &wd, s_min, s_max).v
+            retention_dual(&prior_dt, &prior_r, cur_dt, &wd, s_min, s_max).v
         };
         let h = 1e-6;
         for k in 0..NP {

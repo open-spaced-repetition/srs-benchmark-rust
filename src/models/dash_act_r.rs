@@ -12,10 +12,12 @@ use crate::split::time_series_split;
 use crate::train::{self, BatchModel, TrainConfig};
 
 const NP: usize = 5;
-const INIT_W: [f64; NP] = [1.4164, 0.516, -0.0564, 1.9223, 1.0549];
+pub const INIT_W: [f64; NP] = [1.4164, 0.516, -0.0564, 1.9223, 1.0549];
 
-/// `intervals` = `dt_active[1..=pos]`; time-to-now is its reverse cumulative sum.
-fn retention<const P: usize>(prior_ratings: &[i64], intervals: &[f64], w: &[Dual<P>; NP]) -> Dual<P> {
+/// `intervals` = `dt_active[1..=pos]`; time-to-now is its reverse cumulative sum. Forward-mode
+/// (`Dual<P>`) — prediction (`Dual<0>`) + gradient oracle. The training gradient uses the
+/// closed-form analytic VJP in [`super::dash_act_r_grad`].
+pub fn retention_dual<const P: usize>(prior_ratings: &[i64], intervals: &[f64], w: &[Dual<P>; NP]) -> Dual<P> {
     let n = intervals.len();
     let mut ttn = vec![0.0f64; n];
     let mut acc = 0.0;
@@ -47,7 +49,7 @@ impl<'a> Model<'a> {
         Model { ds, rows: rows.to_vec(), weights: weights.to_vec() }
     }
     fn ret<const P: usize>(&self, w: &[Dual<P>; NP], row: &Row) -> Dual<P> {
-        retention(self.ds.prior_ratings(row), self.ds.intervals_from_second(row), w)
+        retention_dual(self.ds.prior_ratings(row), self.ds.intervals_from_second(row), w)
     }
 }
 
@@ -76,16 +78,18 @@ impl BatchModel for Model<'_> {
         idx.iter().map(|&i| self.ret(&wd, &self.rows[i]).v).collect()
     }
     fn grad(&self, params: &[f64], idx: &[usize]) -> Vec<f64> {
-        let wd: [Dual<NP>; NP] = std::array::from_fn(|k| Dual::param(k, params[k]));
+        // Closed-form analytic gradient (f64), one O(n) pass vs forward-mode's Dual<5>.
         let mut g = vec![0.0f64; NP];
         for &i in idx {
-            let ret = self.ret(&wd, &self.rows[i]);
-            let p = ret.v;
-            let denom = (p * (1.0 - p)).max(1e-12);
-            let dl = self.weights[i] * (p - self.rows[i].y as f64) / denom;
-            for k in 0..NP {
-                g[k] += dl * ret.g[k];
-            }
+            let row = &self.rows[i];
+            super::dash_act_r_grad::grad_one(
+                params,
+                self.ds.prior_ratings(row),
+                self.ds.intervals_from_second(row),
+                row.y as f64,
+                self.weights[i],
+                &mut g,
+            );
         }
         g
     }
@@ -137,11 +141,11 @@ mod tests {
         let intervals = [2.0, 9.0, 0.05, 1.5, 30.0];
         let grad = {
             let wd: [Dual<NP>; NP] = std::array::from_fn(|k| Dual::param(k, INIT_W[k]));
-            retention(&prior_r, &intervals, &wd).g
+            retention_dual(&prior_r, &intervals, &wd).g
         };
         let val = |w: [f64; NP]| {
             let wd: [Dual<0>; NP] = std::array::from_fn(|k| Dual::c(w[k]));
-            retention(&prior_r, &intervals, &wd).v
+            retention_dual(&prior_r, &intervals, &wd).v
         };
         let h = 1e-6;
         for k in 0..NP {

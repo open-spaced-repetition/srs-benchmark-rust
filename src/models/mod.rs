@@ -9,13 +9,17 @@ pub mod anki;
 pub mod avg;
 pub mod dash;
 pub mod dash_act_r;
+pub mod dash_act_r_grad;
 pub mod ebisu;
 pub mod fsrs_init;
 #[cfg(feature = "fsrs-rs")]
 pub mod fsrs_rs;
 pub mod fsrs_v1;
+pub mod fsrs_v1_grad;
 pub mod fsrs_v2;
+pub mod fsrs_v2_grad;
 pub mod fsrs_v3;
+pub mod fsrs_v3_grad;
 pub mod fsrs_v4;
 pub mod fsrs_v4_grad;
 pub mod fsrs_v4dot5;
@@ -38,6 +42,7 @@ pub mod moving_avg;
 pub mod rmse_bins_exploit;
 pub mod sm2;
 pub mod sm2_trainable;
+pub mod sm2_trainable_grad;
 
 use crate::autodiff::round_scalar as r;
 use crate::eval::Params;

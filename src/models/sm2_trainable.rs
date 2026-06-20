@@ -17,7 +17,7 @@ use crate::split::time_series_split;
 use crate::train::{self, BatchModel, TrainConfig};
 
 const NP: usize = 6;
-const INIT_W: [f64; NP] = [1.0, 6.0, 2.5, 0.02, 7.0, 0.18];
+pub const INIT_W: [f64; NP] = [1.0, 6.0, 2.5, 0.02, 7.0, 0.18];
 
 /// Forgetting curve `0.9^(t/s)`.
 #[inline]
@@ -27,7 +27,9 @@ fn fc<const P: usize>(t: f64, s: Dual<P>) -> Dual<P> {
 
 /// Replay the rating history to the stability (interval) at the prediction point, then apply
 /// the forgetting curve at `cur_dt`. Mirrors `SM2.forward` + `forgetting_curve`.
-fn retention<const P: usize>(prior_r: &[i64], cur_dt: f64, w: &[Dual<P>; NP], s_min: f64, s_max: f64) -> Dual<P> {
+/// Forward-mode (`Dual<P>`) recurrence — prediction (`Dual<0>`) + gradient oracle. The training
+/// gradient uses the hand-written reverse-mode VJP in [`super::sm2_trainable_grad`].
+pub fn retention_dual<const P: usize>(prior_r: &[i64], cur_dt: f64, w: &[Dual<P>; NP], s_min: f64, s_max: f64) -> Dual<P> {
     let mut ivl = Dual::<P>::c(0.0);
     let mut ef = w[2]; // state[:,1] initialized to w[2]
     let mut reps: i64 = 0;
@@ -85,7 +87,7 @@ impl<'a> Model<'a> {
         }
     }
     fn ret<const P: usize>(&self, w: &[Dual<P>; NP], row: &Row) -> Dual<P> {
-        retention(self.ds.prior_ratings(row), row.delta_t, w, self.s_min, self.s_max)
+        retention_dual(self.ds.prior_ratings(row), row.delta_t, w, self.s_min, self.s_max)
     }
 }
 
@@ -113,16 +115,22 @@ impl BatchModel for Model<'_> {
         idx.iter().map(|&i| self.ret(&wd, &self.rows[i]).v).collect()
     }
     fn grad(&self, params: &[f64], idx: &[usize]) -> Vec<f64> {
-        let wd: [Dual<NP>; NP] = std::array::from_fn(|k| Dual::param(k, params[k]));
+        // Hand-written reverse-mode VJP (f64), ~1 fwd + 1 bwd per row vs forward-mode's ~6×.
+        let wc = super::sm2_trainable_grad::wconsts(self.s_min, self.s_max);
         let mut g = vec![0.0f64; NP];
+        let mut caches = Vec::new();
         for &i in idx {
-            let ret = self.ret(&wd, &self.rows[i]);
-            let p = ret.v;
-            let denom = (p * (1.0 - p)).max(1e-12);
-            let dl = self.weights[i] * (p - self.rows[i].y as f64) / denom;
-            for k in 0..NP {
-                g[k] += dl * ret.g[k];
-            }
+            let row = &self.rows[i];
+            super::sm2_trainable_grad::grad_one(
+                params,
+                self.ds.prior_ratings(row),
+                row.delta_t,
+                row.y as f64,
+                self.weights[i],
+                &wc,
+                &mut g,
+                &mut caches,
+            );
         }
         g
     }
@@ -182,11 +190,11 @@ mod tests {
         let (cur_dt, s_min, s_max) = (7.0, 0.0001, 36500.0);
         let grad = {
             let wd: [Dual<NP>; NP] = std::array::from_fn(|k| Dual::param(k, INIT_W[k]));
-            retention(&prior_r, cur_dt, &wd, s_min, s_max).g
+            retention_dual(&prior_r, cur_dt, &wd, s_min, s_max).g
         };
         let val = |w: [f64; NP]| {
             let wd: [Dual<0>; NP] = std::array::from_fn(|k| Dual::c(w[k]));
-            retention(&prior_r, cur_dt, &wd, s_min, s_max).v
+            retention_dual(&prior_r, cur_dt, &wd, s_min, s_max).v
         };
         let h = 1e-6;
         for k in 0..NP {

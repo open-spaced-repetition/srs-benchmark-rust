@@ -41,7 +41,12 @@ finite-difference / forward-mode-oracle unit tests (gated to `--features fp64`) 
 | FSRS-5 | hand-written reverse-mode VJP (f64) | `src/models/fsrs_v5_grad.rs` |
 | FSRS-4.5 | hand-written reverse-mode VJP (f64) | `src/models/fsrs_v4dot5_grad.rs` |
 | FSRS-4 | hand-written reverse-mode VJP (f64) | `src/models/fsrs_v4_grad.rs` |
-| _(FSRS v1–v3, ACT-R, Anki, DASH[ACT-R], SM2-trainable: still forward-mode `Dual` — candidates)_ | | |
+| FSRS-3 | hand-written reverse-mode VJP (f64) | `src/models/fsrs_v3_grad.rs` |
+| FSRS-2 | hand-written reverse-mode VJP (f64) | `src/models/fsrs_v2_grad.rs` |
+| FSRS-1 | hand-written reverse-mode VJP (f64) | `src/models/fsrs_v1_grad.rs` |
+| SM2-trainable | hand-written reverse-mode VJP (f64) | `src/models/sm2_trainable_grad.rs` |
+| DASH[ACT-R] | closed-form analytic gradient (f64, static sum) | `src/models/dash_act_r_grad.rs` |
+| _(Anki: reverse-mode VJP REJECTED — slower than vectorized `Dual<7>`; stays forward-mode. ACT-R: still forward-mode `Dual`.)_ | | |
 
 ## Iterations
 
@@ -52,6 +57,12 @@ finite-difference / forward-mode-oracle unit tests (gated to `--features fp64`) 
 | 3 | 2026-06-20 | **FSRS-5** hand-written reverse-mode VJP (`fsrs_v5_grad.rs`) replaces forward-mode `Dual<19>`; predict keeps `Dual<0>`; f64 | FSRS-5 --short --secs (200u), before=iter2 | 0.458876 | 0.458928 | 1416.1 | 1087.2 | ×1.27 median / ×1.30 total | 1.297e-33 | **ACCEPT** |
 | 4 | 2026-06-20 | **FSRS-4.5** reverse-mode VJP (`fsrs_v4dot5_grad.rs`) replaces forward-mode `Dual<17>`; f64 | FSRS-4.5 --short --secs (200u), before=iter3 | 0.428544 | 0.428537 | 1709.3 | 1238.5 | ×1.32 median / ×1.38 total | 7.860e-35 | **ACCEPT** |
 | 5 | 2026-06-20 | **FSRS-4** reverse-mode VJP (`fsrs_v4_grad.rs`) replaces forward-mode `Dual<17>`; f64 | FSRSv4 --short --secs (200u), before=iter3 | 0.482724 | 0.482708 | 1152.4 | 863.9 | ×1.28 median / ×1.33 total | 1.821e-33 | **ACCEPT** |
+| 6 | 2026-06-20 | **FSRS-3** reverse-mode VJP (`fsrs_v3_grad.rs`, `Dual<13>`); nd-before-ns, `0.9^(t/s)` curve | FSRSv3 --short --secs (200u) | 0.639411 | 0.639411 | 1232.1 | 970.9 | ×1.25 median / ×1.27 total | 2.142e-33 | **ACCEPT** |
+| 7 | 2026-06-20 | **FSRS-2** reverse-mode VJP (`fsrs_v2_grad.rs`, `Dual<14>`) | FSRSv2 --short --secs (200u) | 0.657160 | 0.657145 | 1545.2 | 1159.9 | ×1.32 median / ×1.33 total | 9.415e-35 | **ACCEPT** |
+| 8 | 2026-06-20 | **FSRS-1** reverse-mode VJP (`fsrs_v1_grad.rs`, `Dual<7>`); 3-state (lapse count) | FSRSv1 --short --secs (200u) | 0.725029 | 0.725029 | 1475.6 | 1322.1 | ×1.09 median / ×1.12 total | 5.234e-24 | **ACCEPT** |
+| 9 | 2026-06-20 | **SM2-trainable** reverse-mode VJP (`sm2_trainable_grad.rs`, `Dual<6>`) | SM2-trainable --short --secs (200u) | 0.811821 | 0.811821 | 293.6 | 273.7 | ×1.10 median / ×1.07 total | 5.002e-11 | **ACCEPT** |
+| 10 | 2026-06-20 | **DASH[ACT-R]** closed-form analytic gradient (`dash_act_r_grad.rs`, `Dual<5>`); static sum, not a recurrence | DASH[ACT-R] --short --secs (200u) | 0.382135 | 0.382135 | 907.4 | 760.6 | ×1.15 median / ×1.19 total | 2.551e-26 | **ACCEPT** |
+| 11 | 2026-06-20 | **Anki** reverse-mode VJP (`Dual<7>`; max/leaky_relu/branch routing) | Anki --short --secs (30u smoke) | (bit-identical) | (bit-identical) | — | — | ×0.97 (slower) | **REJECT** (reverted) |
 
 ## Iteration details
 
@@ -130,3 +141,30 @@ finite-difference / forward-mode-oracle unit tests (gated to `--features fp64`) 
   - FSRS-4.5: 341853 → 247700 ms = **×1.38** (median ×1.32); **p = 7.860e-35**. **ACCEPT.**
   - FSRSv4: 230475 → 172779 ms = **×1.33** (median ×1.28); **p = 1.821e-33**. **ACCEPT.**
 - **Champion:** `target/release/script_p3_iter5.exe` (FSRS-4/4.5/5/6 all reverse-mode VJP now).
+
+### iters 6–10 — FSRS-3/2/1, SM2-trainable, DASH[ACT-R] reverse-mode gradients (ACCEPT)
+
+- **Change:** reverse-mode VJP modules for the remaining lower-NP f64 Dual algos — `fsrs_v3_grad.rs`
+  (NP=13, nd-before-ns, `0.9^(t/s)`), `fsrs_v2_grad.rs` (NP=14), `fsrs_v1_grad.rs` (NP=7, 3-state
+  with a data-driven lapse count), `sm2_trainable_grad.rs` (NP=6, interval/ease machine), and
+  `dash_act_r_grad.rs` (NP=5, a **closed-form** analytic gradient — DASH[ACT-R] is a static sum, not
+  a recurrence, so the sigmoid+BCE seed simplifies to `weight·(p-y)`). Each model's `retention` →
+  `retention_dual` (kept as `Dual<0>` predict + the gradient oracle). f64.
+- **Correctness:** each has a `*_analytic_grad_matches_forward_mode` test (fp64) vs the `Dual` oracle
+  to <1e-6; full suite green (33 fp64 / 9 f32). 200-user vs FROZEN baselines, `size` exact, all still
+  match upstream: FSRS-3 Δ=+0.000000, FSRS-2 Δ=−0.000015, FSRS-1 Δ=+0.000000, SM2 Δ=+0.000000,
+  DASH[ACT-R] Δ=+0.000000.
+- **Speed (200 users, simultaneous):** FSRS-3 ×1.27 (p=2.142e-33), FSRS-2 ×1.33 (p=9.415e-35),
+  FSRS-1 ×1.12 (p=5.234e-24), SM2 ×1.07 (p=5.002e-11), DASH[ACT-R] ×1.19 (p=2.551e-26). All ACCEPT.
+  The wins shrink with the parameter count P (the vectorized forward-mode loop is short at low P).
+
+### iter 11 — Anki reverse-mode VJP (REJECT)
+
+- A hand-written reverse-mode VJP for Anki (NP=7; `max`/`leaky_relu`/early-vs-non-early branch
+  routing). The VJP was **correct** (oracle-matched <1e-6, output bit-identical), but at NP=7 the
+  fat per-step routing cache + branch logic made it **×0.97 (slower)** than the already-vectorized
+  forward-mode `Dual<7>` (30-user smoke median ratio 1.0283). Per the speed gate it was **REJECTED**
+  and reverted — Anki stays on forward-mode `Dual`. (Lesson: below ~NP≈10 with heavy branch routing,
+  reverse-mode's bookkeeping can cost more than the forward-mode P-loop it removes.)
+- **Champion (end of batch):** `target/release/script_p3_iter10.exe` (= v1–v6 + SM2 + DASH[ACT-R]
+  reverse-mode; Anki/ACT-R forward-mode).
