@@ -104,6 +104,11 @@ two_buttons, S0, default, train_equals_test, the non-`--secs` path. **Smart pres
   (3) ACT-R inner power `a.ln().mul(e).exp()` instead of `a.powd(e)` — `ln a` computed once & reused for
   value+grad (vs powf's internal ln + a separate one), ×1.55 more; value `exp(e·ln a)` ~1 ULP off powf,
   output bit-identical at 6-dp. ACT-R cumulative ≈×3.5; it's transcendental-bound (a VJP would NOT help).
+- **DASH precompute log1p(features)** (2026-06-21): `Dash::z` recomputed `ln(feat+1)` for all 8 features
+  every predict/grad call; features are constant so store `logfeat` once in `from_rows` → ×1.5 on all 8
+  DASH configs, bit-identical. (A per-card O(N log N) feature-*build* rewrite was REJECTED first — ×0.99,
+  the build wasn't the bottleneck. Lesson: measure, don't assume O(N²) build dominates.) Anki/SM2-trainable
+  per-card predict also REJECTED (cheap recurrence → grouping overhead made it slower).
   **FSRS v1–v6 per-card predict** (2026-06-21): `predict`/`eval_loss` replayed the recurrence per row
   (O(N²)/card); extracted `forward_states` (records stability after each review) so `predict` runs it
   ONCE per card, each row reads `states[pos-1]` → O(N)/card, **bit-identical**. ×1.36 FSRS-6 / ×1.27

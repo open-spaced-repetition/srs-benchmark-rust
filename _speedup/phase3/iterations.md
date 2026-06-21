@@ -268,3 +268,25 @@ move LogLoss at the 6-dp reported precision). Full suite green (f32 19 / fp64 43
 Cumulative ACT-R from the original O(N³): 1295820 → 787312 (per-card) → 554267 (powd) → 370680 = ×3.5.
 Lesson: ACT-R is transcendental-bound; cutting a `ln`/`exp` per inner pair beats any gradient-arithmetic
 trick (VJP). The remaining cost is 1 ln + 1 exp per pair (irreducible without changing the model math).
+
+## DASH — precompute log1p(features) (x1.5); per-card feature build REJECTED (2026-06-21)
+
+**First attempt (REJECTED):** I assumed the O(N²)-per-card feature *build* dominated DASH (`dash_features`
+recomputes a reverse-cumsum + 4 window loops per row), and rewrote the count variant as an O(N log N)
+per-card prefix + binary search (and HLR similarly). Output bit-identical (non-secs) / within ±0.0005
+(--secs boundary off-by-one), but **DASH --secs got ×0.99 (no gain)** — so the build was NOT the
+bottleneck. Reverted (dash.rs, hlr.rs).
+
+**The real bottleneck:** `Dash::z` recomputed `r((feat+1).ln())` for all 8 features on EVERY predict/
+grad call (~11 passes/training over all rows). The features are constant during training, so the
+log-transform should be done ONCE.
+
+**Change (`src/models/dash.rs`):** store `logfeat[i][k] = r(ln(feat[i][k]+1))` (computed once in
+`from_rows`); `z`/`grad` use it directly (no `ln` in the train loop). **Bit-identical** (same value,
+computed once and reused) for ALL 8 DASH configs incl. DASH[MCM] (verified size-exact, dLogLoss 0.0).
+
+**Speed (--secs, 200 users, 1 thread each, SIMULTANEOUS, CPU locked):** DASH --secs 47118→29992 =
+**×1.57** (median 0.628); DASH[MCM] --secs 48939→31812 = **×1.54** (median 0.634); both Wilcoxon
+one-sided p=7.181e-35. Full suite green (f32 19 / fp64 43). **ACCEPT.** Applies to all 8 DASH configs.
+Lesson: don't assume the O(N²) build dominates — profile/measure. Here a constant per-row transcendental
+recomputed every epoch was the cost; hoisting it out of the train loop was the win.

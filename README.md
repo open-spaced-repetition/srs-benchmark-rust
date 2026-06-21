@@ -340,6 +340,12 @@ per card, **bit-identical**. ×1.36 on FSRS-6, ×1.27 on FSRS-5 (`--short --secs
 configs. (The training gradient stays per-row: it runs per seq-len-sorted batch, where a card's rows
 split across batches, so per-card sharing doesn't apply — and that matches Python's batched structure.)
 
+**DASH** got a different speedup: its `z` recomputed `ln(feature+1)` for all 8 features on every
+predict/grad call, but the features are constant during training — so `log(feature+1)` is now computed
+**once** at feature build, ×1.5+ on all 8 DASH configs, bit-identical. (An earlier attempt to instead
+speed up the O(N²) feature *build* via a per-card prefix gave nothing — the build wasn't the bottleneck;
+measuring beats assuming.)
+
 ## Status
 
 Work in progress — see `CLAUDE.md` for the architecture, phase plan, and current status.

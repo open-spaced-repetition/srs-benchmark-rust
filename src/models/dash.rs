@@ -40,7 +40,10 @@ fn dash_features(prior_ratings: &[i64], intervals: &[f64], decay: bool) -> [f64;
 }
 
 struct Dash {
-    feat: Vec<[f64; 8]>,
+    /// Precomputed `round(ln(feature + 1))` per row — the only way the features enter `z`. The
+    /// features are constant during training, so the log-transform is done ONCE here instead of
+    /// recomputing 8 `ln`s per row on every predict/grad call (~11 passes/training). Bit-identical.
+    logfeat: Vec<[f64; 8]>,
     yv: Vec<f64>,
     wv: Vec<f64>,
 }
@@ -64,14 +67,19 @@ impl Dash {
     }
 
     fn from_rows(ds: &Dataset, rows: &[Row], weights: &[f64], decay: bool) -> Self {
-        let mut feat = Vec::with_capacity(rows.len());
+        let mut logfeat = Vec::with_capacity(rows.len());
         let mut yv = Vec::with_capacity(rows.len());
-        for r in rows {
-            feat.push(dash_features(ds.prior_ratings(r), ds.intervals_from_second(r), decay));
-            yv.push(r.y as f64);
+        for row in rows {
+            let f = dash_features(ds.prior_ratings(row), ds.intervals_from_second(row), decay);
+            let mut lf = [0.0f64; 8];
+            for k in 0..8 {
+                lf[k] = r((f[k] + 1.0).ln());
+            }
+            logfeat.push(lf);
+            yv.push(row.y as f64);
         }
         Dash {
-            feat,
+            logfeat,
             yv,
             wv: weights.to_vec(),
         }
@@ -81,7 +89,7 @@ impl Dash {
     fn z(&self, w: &[f64], i: usize) -> f64 {
         let mut z = w[8];
         for k in 0..8 {
-            z = r(z + r(w[k] * r((self.feat[i][k] + 1.0).ln())));
+            z = r(z + r(w[k] * self.logfeat[i][k]));
         }
         z
     }
@@ -95,7 +103,7 @@ impl BatchModel for Dash {
         unreachable!("Dash init comes from config; train_with_init is used")
     }
     fn n_rows(&self) -> usize {
-        self.feat.len()
+        self.logfeat.len()
     }
     fn seq_len(&self, _row: usize) -> usize {
         8
@@ -119,7 +127,7 @@ impl BatchModel for Dash {
             // torch: grad_z = (p-y)/clamp(pq,1e-12) * pq  (≈ p-y for non-extreme p)
             let grad_z = r(r(r(self.wv[i] * (p - self.yv[i])) / pq.max(1e-12)) * pq);
             for k in 0..8 {
-                g[k] = r(g[k] + r(grad_z * r((self.feat[i][k] + 1.0).ln())));
+                g[k] = r(g[k] + r(grad_z * self.logfeat[i][k]));
             }
             g[8] = r(g[8] + grad_z);
         }
@@ -177,15 +185,26 @@ mod tests {
     #[cfg(feature = "fp64")] // finite-diff (h=1e-6) needs f64; f32 rounding noise dominates
     #[test]
     fn dash_grad_matches_finite_difference() {
-        let feat = vec![
+        let feat: Vec<[f64; 8]> = vec![
             [1.0, 1.0, 3.0, 2.0, 5.0, 3.0, 5.0, 3.0],
             [0.0, 0.0, 1.0, 1.0, 2.0, 1.0, 4.0, 2.0],
             [2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0],
         ];
         let yv = vec![1.0, 0.0, 1.0];
         let wv = vec![1.0, 0.8, 1.2];
+        // Model stores log(feature+1); under fp64 `r` is a no-op so this matches the old per-call ln.
+        let logfeat: Vec<[f64; 8]> = feat
+            .iter()
+            .map(|row| {
+                let mut lf = [0.0f64; 8];
+                for k in 0..8 {
+                    lf[k] = (row[k] + 1.0).ln();
+                }
+                lf
+            })
+            .collect();
         let m = Dash {
-            feat,
+            logfeat,
             yv: yv.clone(),
             wv: wv.clone(),
         };
