@@ -35,28 +35,30 @@ fn fc<const P: usize>(t: f64, s: Dual<P>) -> Dual<P> {
     Dual::<P>::c(factor() * t).div(s).add_c(1.0).powf_c(DECAY)
 }
 
-/// Forward-mode (`Dual<P>`) recurrence — prediction path (`Dual<0>`) + gradient oracle. The
-/// *training* gradient uses the hand-written reverse-mode VJP in [`super::fsrs_v5_grad`].
-pub fn retention_dual<const P: usize>(
-    prior_dt: &[f64],
-    prior_r: &[i64],
-    cur_dt: f64,
+/// One forward pass of the FSRS-5 recurrence over a card's reviews, returning post-clamp stability
+/// `s` AFTER each review (length `card_r.len()`; difficulty `d` is internal). Shared per-card prefix:
+/// every row reads one of these states instead of replaying — O(N) per card instead of O(N²).
+fn forward_states<const P: usize>(
+    card_dt: &[f64],
+    card_r: &[i64],
     w: &[Dual<P>; NP],
     s_min: f64,
     s_max: f64,
-) -> Dual<P> {
+) -> Vec<Dual<P>> {
+    let n = card_r.len();
+    let mut states = Vec::with_capacity(n);
     let mut s = Dual::<P>::c(0.0);
     let mut d = Dual::<P>::c(0.0);
-    for k in 0..prior_r.len() {
-        let rating = prior_r[k] as f64;
+    for k in 0..n {
+        let rating = card_r[k] as f64;
         let (ns, nd) = if k == 0 {
             let ns = w[(rating as usize) - 1];
             // init_d = w4 - exp(w5*(rating-1)) + 1
             let nd = w[4].sub(w[5].mul_c(rating - 1.0).exp()).add_c(1.0).clamp(1.0, 10.0);
             (ns, nd)
         } else {
-            let r = fc(prior_dt[k], s);
-            let short_term = prior_dt[k] < 1.0;
+            let r = fc(card_dt[k], s);
+            let short_term = card_dt[k] < 1.0;
             let success = rating > 1.0;
             let ns = if short_term {
                 // s * exp(w17*(rating-3+w18))
@@ -91,7 +93,23 @@ pub fn retention_dual<const P: usize>(
         };
         s = ns.clamp(s_min, s_max);
         d = nd;
+        states.push(s);
     }
+    states
+}
+
+/// Forward-mode (`Dual<P>`) recurrence — prediction path (`Dual<0>`) + gradient oracle. The
+/// *training* gradient uses the hand-written reverse-mode VJP in [`super::fsrs_v5_grad`].
+pub fn retention_dual<const P: usize>(
+    prior_dt: &[f64],
+    prior_r: &[i64],
+    cur_dt: f64,
+    w: &[Dual<P>; NP],
+    s_min: f64,
+    s_max: f64,
+) -> Dual<P> {
+    let states = forward_states(prior_dt, prior_r, w, s_min, s_max);
+    let s = states.last().copied().unwrap_or_else(|| Dual::<P>::c(0.0));
     fc(cur_dt, s)
 }
 
@@ -126,9 +144,6 @@ impl<'a> Model<'a> {
         }
         Model { ds, rows: out_rows, weights: out_w, init_ref, s_min: cfg.s_min, s_max: cfg.s_max }
     }
-    fn ret<const P: usize>(&self, w: &[Dual<P>; NP], row: &Row) -> Dual<P> {
-        retention_dual(self.ds.prior_dt_active(row), self.ds.prior_ratings(row), row.delta_t, w, self.s_min, self.s_max)
-    }
 }
 
 impl BatchModel for Model<'_> {
@@ -151,8 +166,25 @@ impl BatchModel for Model<'_> {
         self.weights[row]
     }
     fn predict(&self, params: &[f64], idx: &[usize]) -> Vec<f64> {
+        use std::collections::HashMap;
         let wd: [Dual<0>; NP] = std::array::from_fn(|k| Dual::c(params[k]));
-        idx.iter().map(|&i| self.ret(&wd, &self.rows[i]).v).collect()
+        // Group rows by card → run the recurrence ONCE per card (O(N), not O(N²)); each row at pos p
+        // reads the state after p reviews = states[p-1]. Bit-identical to a per-row replay.
+        let mut by_card: HashMap<u32, Vec<usize>> = HashMap::new();
+        for (k, &i) in idx.iter().enumerate() {
+            by_card.entry(self.rows[i].card_idx).or_default().push(k);
+        }
+        let mut out = vec![0.0f64; idx.len()];
+        for (card_idx, ks) in by_card {
+            let maxpos = ks.iter().map(|&k| self.rows[idx[k]].pos as usize).max().unwrap();
+            let card = &self.ds.cards[card_idx as usize];
+            let states = forward_states(&card.dt_active[..maxpos], &card.ratings[..maxpos], &wd, self.s_min, self.s_max);
+            for &k in &ks {
+                let row = &self.rows[idx[k]];
+                out[k] = fc(row.delta_t, states[row.pos as usize - 1]).v;
+            }
+        }
+        out
     }
     fn grad(&self, params: &[f64], idx: &[usize]) -> Vec<f64> {
         // Hand-written reverse-mode VJP (f64), ~1 fwd + 1 bwd per row vs forward-mode's ~19×.

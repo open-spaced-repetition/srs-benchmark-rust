@@ -18,21 +18,23 @@ fn fc<const P: usize>(t: f64, s: Dual<P>) -> Dual<P> {
     Dual::<P>::c(t).div(s).mul_c(0.9f64.ln()).exp()
 }
 
-/// Forward-mode (`Dual<P>`) recurrence — prediction (`Dual<0>`) + gradient oracle. The training
-/// gradient uses the hand-written reverse-mode VJP in [`super::fsrs_v1_grad`].
-pub fn retention_dual<const P: usize>(
-    prior_dt: &[f64],
-    prior_r: &[i64],
-    cur_dt: f64,
+/// One forward pass of the FSRS-1 recurrence over a card's reviews, returning post-clamp `s` AFTER
+/// each review (difficulty `d` and lapse count `l` are internal). Shared per-card prefix → O(N) per
+/// card, not O(N²).
+fn forward_states<const P: usize>(
+    card_dt: &[f64],
+    card_r: &[i64],
     w: &[Dual<P>; NP],
     s_min: f64,
     s_max: f64,
-) -> Dual<P> {
+) -> Vec<Dual<P>> {
+    let n = card_r.len();
+    let mut states = Vec::with_capacity(n);
     let mut s = Dual::<P>::c(0.0);
     let mut d = Dual::<P>::c(0.0);
     let mut l = 0.0f64; // lapse count (constant w.r.t. params)
-    for k in 0..prior_r.len() {
-        let rating = prior_r[k] as f64;
+    for k in 0..n {
+        let rating = card_r[k] as f64;
         let pow2 = 2f64.powf(rating - 1.0);
         let relu_l = (2.0 - rating).max(0.0);
         let (ns, nd, nl) = if k == 0 {
@@ -41,7 +43,7 @@ pub fn retention_dual<const P: usize>(
             let nd = w[1].add_c(3.0 - rating); // w1 - rating + 3
             (ns, nd, relu_l)
         } else {
-            let r = fc(prior_dt[k], s);
+            let r = fc(card_dt[k], s);
             // new_d = relu(d + r - 0.25*2^(rating-1) + 0.1)
             let nd = d.add(r).add_c(0.1 - 0.25 * pow2).clamp_min(0.0);
             let ns = if rating > 1.0 {
@@ -61,7 +63,23 @@ pub fn retention_dual<const P: usize>(
         s = ns.clamp(s_min, s_max);
         d = nd;
         l = nl;
+        states.push(s);
     }
+    states
+}
+
+/// Forward-mode (`Dual<P>`) recurrence — prediction (`Dual<0>`) + gradient oracle. The training
+/// gradient uses the hand-written reverse-mode VJP in [`super::fsrs_v1_grad`].
+pub fn retention_dual<const P: usize>(
+    prior_dt: &[f64],
+    prior_r: &[i64],
+    cur_dt: f64,
+    w: &[Dual<P>; NP],
+    s_min: f64,
+    s_max: f64,
+) -> Dual<P> {
+    let states = forward_states(prior_dt, prior_r, w, s_min, s_max);
+    let s = states.last().copied().unwrap_or_else(|| Dual::<P>::c(0.0));
     fc(cur_dt, s)
 }
 
@@ -88,9 +106,6 @@ impl<'a> Fsrs1<'a> {
         }
         Fsrs1 { ds, rows: out_rows, weights: out_w, s_min: cfg.s_min, s_max: cfg.s_max }
     }
-    fn ret<const P: usize>(&self, w: &[Dual<P>; NP], row: &Row) -> Dual<P> {
-        retention_dual(self.ds.prior_dt_active(row), self.ds.prior_ratings(row), row.delta_t, w, self.s_min, self.s_max)
-    }
 }
 
 impl BatchModel for Fsrs1<'_> {
@@ -113,8 +128,23 @@ impl BatchModel for Fsrs1<'_> {
         self.weights[row]
     }
     fn predict(&self, params: &[f64], idx: &[usize]) -> Vec<f64> {
+        use std::collections::HashMap;
         let wd: [Dual<0>; NP] = std::array::from_fn(|k| Dual::c(params[k]));
-        idx.iter().map(|&i| self.ret(&wd, &self.rows[i]).v).collect()
+        let mut by_card: HashMap<u32, Vec<usize>> = HashMap::new();
+        for (k, &i) in idx.iter().enumerate() {
+            by_card.entry(self.rows[i].card_idx).or_default().push(k);
+        }
+        let mut out = vec![0.0f64; idx.len()];
+        for (card_idx, ks) in by_card {
+            let maxpos = ks.iter().map(|&k| self.rows[idx[k]].pos as usize).max().unwrap();
+            let card = &self.ds.cards[card_idx as usize];
+            let states = forward_states(&card.dt_active[..maxpos], &card.ratings[..maxpos], &wd, self.s_min, self.s_max);
+            for &k in &ks {
+                let row = &self.rows[idx[k]];
+                out[k] = fc(row.delta_t, states[row.pos as usize - 1]).v;
+            }
+        }
+        out
     }
     fn grad(&self, params: &[f64], idx: &[usize]) -> Vec<f64> {
         // Hand-written reverse-mode VJP (f64), ~1 fwd + 1 bwd per row vs forward-mode's ~7×.

@@ -322,10 +322,21 @@ oracle tests guard this). Models with hand-written gradients: **FSRS-7** (+ `f32
 v1–v6 / FSRS-4.5 / SM2-trainable / DASH[ACT-R]** (f64). The speedup work is logged iteration-by-
 iteration in `_speedup/phase2/iterations.md` (FSRS-7) and `_speedup/phase3/iterations.md` (the rest),
 each gated on a Wilcoxon signed-rank timing test (p < 0.01) and a per-algo correctness band. ACT-R and
-Anki keep forward-mode autodiff (a VJP wasn't a net win for them), but ACT-R got a separate
-*algorithmic* speedup: its activation recurrence `m[i]` is a prefix shared by all of a card's rows, so
-it's now computed **once per card** instead of recomputed from scratch per row (O(N³)→O(N²) per card)
-— ×1.65 faster (`ACT-R --short --secs`, bit-identical output).
+Anki keep forward-mode autodiff (a VJP wasn't a net win for them), but ACT-R got two separate
+speedups: (1) an *algorithmic* one — its activation recurrence `m[i]` is a prefix shared by all of a
+card's rows, so it's now computed **once per card** instead of recomputed from scratch per row
+(O(N³)→O(N²) per card), ×1.65 faster, bit-identical; and (2) a leaner `Dual::powd` that reuses the
+already-computed value (`a^(e-1) = aᵉ/a`) instead of a second `powf`, halving its `powf` count — a
+further ×1.35 on ACT-R (`--short --secs`), output bit-identical at the reported precision. (2) also
+helps every forward-mode-`Dual` gradient user (Anki, FSRS-6-one-step).
+
+Separately, **every FSRS version (v1–v6) got a per-card predict speedup**: `predict` (and the
+per-epoch best-weights `eval_loss`, which predicts over all rows) used to replay the stability
+recurrence from scratch for each row — O(N²) per card. The state after k reviews is a shared prefix,
+so `predict` now runs the recurrence **once per card** and each row reads the state it needs — O(N)
+per card, **bit-identical**. ×1.36 on FSRS-6, ×1.27 on FSRS-5 (`--short --secs`); applies to all FSRS
+configs. (The training gradient stays per-row: it runs per seq-len-sorted batch, where a card's rows
+split across batches, so per-card sharing doesn't apply — and that matches Python's batched structure.)
 
 ## Status
 

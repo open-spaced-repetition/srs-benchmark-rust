@@ -32,5 +32,8 @@ __pycache__/
 
 # Speedup scratch run dirs (timing/correctness intermediates); keep the harness + iterations.md + baselines
 /_speedup/phase2/*/
+/_speedup/phase3/*/
+# Detached-timing completion-marker flag files
+_speedup/**/*_TIMING_DONE
 # Stray mangled-redirect logs
 C*Temp*.log

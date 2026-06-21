@@ -184,3 +184,54 @@ card prefix) + `ret_from_m` (per-row sigmoid); new `Model::retentions` groups th
 time_ms 1295820 → 787312 = **×1.65 faster**; median per-user ratio 0.650 (×1.54); Wilcoxon one-sided
 (after<before) **p = 8.308e-30**. **Correctness:** size exact, mean dLogLoss **+0.00000000**, max|d|
 0.0 (bit-identical — same math). **ACCEPT.** Applies to all 3 ACT-R configs (still forward-mode Dual<5>).
+
+## ACT-R — `Dual::powd` value reuse (2026-06-21)
+
+**Bottleneck:** `Dual::powd` (`src/autodiff.rs`) computed `self^e` with TWO `powf` calls — one for
+the value `v = self^e` and a SECOND for the self-derivative `da = e·self^(e-1)` — plus a `ln`. That
+is ~5 transcendentals per call. ACT-R's base-level-activation recurrence is an O(N²)-per-card sum of
+`a.powd(exponent[j])`, so `powd` dominates its gradient.
+
+**Change (`src/autodiff.rs::powd`):** reuse the already-computed value — `da = e·self^(e-1) = e·v/self`
+— instead of the second `powf`. The value `v = self.v.powf(e.v)` is kept EXACT (so every prediction
+is bit-identical; for P=0 predict, `da`/`de`/`ln` are dead and elide to the single `powf`). Only the
+gradient's `da` term changes, by f64 rounding (~1e-16). Helps every forward-mode-`Dual` grad user
+(ACT-R, Anki, FSRS-6-one-step + the oracle tests); the VJP'd FSRS algos hand-write their gradients so
+are untouched. powd: 2·powf + ln  →  1·powf + ln + a div.
+
+**Speed (ACT-R --short --secs, 200 users, 1 thread each, SIMULTANEOUS, CPU locked at base):** total
+time_ms 750170 → 554267 = **×1.35 faster**; median per-user ratio 0.8447 (×1.18); the total beats the
+median because the win scales with reviews/card (more O(N²) powd). Wilcoxon one-sided (after<before)
+**p = 2.965e-30**. **Correctness:** size exact (sum 9847205), mean dLogLoss **+0.00000000**, max|d|
+0.0 (bit-identical at the 6-dp reported precision). Full suite green (f32 19 / fp64 43). **ACCEPT.**
+Cumulative ACT-R from the original O(N³): 1295820 → 787312 (per-card) → 554267 (powd) = ×2.34.
+
+## FSRS v1–v6 — per-card predict (shared recurrence reuse) (2026-06-21)
+
+**Bottleneck:** every FSRS version's `predict` (and the per-epoch best-weights `eval_loss`, which calls
+`predict` over ALL rows) replayed the full stability recurrence FROM SCRATCH for each row —
+`retention_dual(prior_dt[..pos], prior_r[..pos], …)` loops `0..pos`. A card with N reviews has ~N
+rows at pos 1..N, so eval/test predict was **O(N²) per card** (the same trap ACT-R had, never fixed
+for FSRS). The state after k reviews is a shared prefix; a row at pos p only needs the stability AFTER
+p reviews.
+
+**Change (`fsrs_v1..v6` + `fsrs_v4dot5`):** extracted the recurrence loop into `forward_states<P>`
+returning the post-clamp stability `s` after EVERY review (difficulty `d`, and v1's lapse `l`, stay
+internal); `retention_dual` now = `forward_states` + final `fc` (bit-identical). `Model::predict`
+groups the requested rows by card, runs `forward_states` ONCE per card up to the deepest pos, and each
+row at pos p reads `states[p-1]` → **O(N) per card**. Bit-identical (same ops, just not recomputed).
+
+**Scope note — predict only, not grad:** `eval_loss` and the final test predict call `predict` over
+ALL rows at once, so per-card grouping fully applies. `grad` runs per-BATCH and batches are sorted by
+seq_len (= pos), so a card's rows land in different batches — per-card sharing wouldn't help grad (and
+grad's O(N²) matches Python's batched structure). So this targets the eval+test predict fraction only.
+
+**Correctness:** full suite green (f32 19 / fp64 43 — the `*_grad_matches_*` oracles call the refactored
+`retention_dual`). 150–200-user new-vs-powd-binary check, ALL bit-identical: v1/v2/v3/v4/v4.5/v5/v6 all
+size exact, mean dLogLoss +0.00000000, max|d| 0.0.
+
+**Speed (--short --secs, 200 users, 1 thread each, SIMULTANEOUS, CPU locked at base):**
+- **FSRS-6**: total time_ms 276209 → 203495 = **×1.36** (median 0.8412); Wilcoxon p=6.458e-24. ACCEPT.
+- **FSRS-5**: total time_ms 228276 → 179641 = **×1.27** (median 0.8818); Wilcoxon p=1.867e-14. ACCEPT.
+Applies to ALL FSRS configs (v1–v6 + every FSRS-6 variant + FSRS-6-one-step, which predicts via
+`fsrs_v6::predict`). The win = the eval+test predict fraction collapsing from O(N²) to O(N).

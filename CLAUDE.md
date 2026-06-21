@@ -95,9 +95,17 @@ two_buttons, S0, default, train_equals_test, the non-`--secs` path. **Smart pres
   each model's specific forward — changing a model's math requires re-deriving its backward; the
   `--features fp64` `*_grad_matches_*` oracle tests guard against drift.** Still forward-mode: Anki
   (VJP wasn't a net win at NP=7), ACT-R, FSRS-6-one-step (hand-derived single-transition grad already).
-  **ACT-R got an algorithmic (not VJP) speedup** (2026-06-21): its activation recurrence `m[i]` is a
-  prefix shared by all of a card's rows, so `Model::retentions` computes it ONCE per card instead of
-  per row (O(N³)→O(N²)/card) — ×1.65 faster, bit-identical (`_speedup/phase3/iterations.md`).
+  **ACT-R got two speedups** (2026-06-21, `_speedup/phase3/iterations.md`): (1) algorithmic — its
+  activation recurrence `m[i]` is a prefix shared by all of a card's rows, so `Model::retentions`
+  computes it ONCE per card instead of per row (O(N³)→O(N²)/card), ×1.65, bit-identical; (2) a leaner
+  `Dual::powd` (`autodiff.rs`) reuses the value (`da = e·aᵉ/a`) instead of a 2nd `powf` — ×1.35 more on
+  ACT-R, predictions bit-identical (P=0 elides the dead grad terms), grad perturbed ~1e-16. (2) helps
+  every forward-mode-`Dual` grad user (ACT-R, Anki, FSRS-6-one-step); the VJP'd algos hand-write grads.
+  **FSRS v1–v6 per-card predict** (2026-06-21): `predict`/`eval_loss` replayed the recurrence per row
+  (O(N²)/card); extracted `forward_states` (records stability after each review) so `predict` runs it
+  ONCE per card, each row reads `states[pos-1]` → O(N)/card, **bit-identical**. ×1.36 FSRS-6 / ×1.27
+  FSRS-5; all FSRS configs. NOT grad: grad is per seq-len-sorted batch (a card's rows split across
+  batches), so per-card sharing doesn't apply there (and that matches Python's batched O(N²)).
 - **Speedup protocol** (if resumed): 200 users, before/after run SIMULTANEOUSLY 1-thread-each, accept
   iff Wilcoxon p<0.01 AND faster AND within ±0.0005 of a FROZEN baseline AND size exact; log EVERY
   iteration with the exact p-value in `_speedup/phase{2,3}/iterations.md` (harness there too).
