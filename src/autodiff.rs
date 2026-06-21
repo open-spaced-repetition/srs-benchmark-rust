@@ -142,8 +142,11 @@ impl<const P: usize> Dual<P> {
     }
     /// `self ^ exp` where the exponent is also a dual. Requires `self.v > 0`.
     pub fn powd(self, e: Self) -> Self {
-        let v = self.v.powf(e.v);
-        let da = e.v * self.v.powf(e.v - 1.0); // dv/dself
+        let v = self.v.powf(e.v); // value kept exact (matches torch's `pow`); predict is unchanged
+        // dv/dself = e·self^(e-1) = e·v/self — reuse `v` instead of a SECOND `powf`, which
+        // halved this op's transcendental count (was 2·powf + ln; now 1·powf + ln + a div).
+        // For P=0 (predict) `da`/`de`/`ln` are dead and elide, leaving just the one `powf`.
+        let da = e.v * v / self.v; // dv/dself
         let de = v * self.v.ln(); // dv/dexp
         let mut g = [0.0; P];
         for k in 0..P {
