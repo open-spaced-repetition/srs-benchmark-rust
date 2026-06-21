@@ -45,7 +45,12 @@ fn recurrence<const P: usize>(dt_incl: &[f64], w: &[Dual<P>; NP]) -> Vec<Dual<P>
         for j in 0..i {
             let dt_sec = (sp[i] - sp[j]) * 86400.0;
             let a = w[4].mul_c(dt_sec).clamp_min(1.0); // (dt_sec·h).clamp_min(1)
-            sum = sum.add(a.powd(exponent[j]));
+            // a^exponent[j] = exp(exponent[j]·ln a). Computing ln(a) ONCE here and reusing it for
+            // both the value and the gradient saves one transcendental per pair vs `a.powd(e)`
+            // (which does powf — itself ln+exp — PLUS a separate ln for the exponent-derivative).
+            // The value becomes exp(e·ln a) instead of powf(a,e) — same math, ~1 ULP different.
+            // a clamped to 1 ⇒ ln a = 0 ⇒ term = 1 (zero grad), matching the clamp.
+            sum = sum.add(a.ln().mul(exponent[j]).exp());
         }
         m[i] = sum.ln(); // m[i]
         exponent[i] = w[1].mul(m[i].exp()).add(w[0]).neg();

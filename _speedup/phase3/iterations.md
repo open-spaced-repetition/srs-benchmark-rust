@@ -235,3 +235,36 @@ size exact, mean dLogLoss +0.00000000, max|d| 0.0.
 - **FSRS-5**: total time_ms 228276 → 179641 = **×1.27** (median 0.8818); Wilcoxon p=1.867e-14. ACCEPT.
 Applies to ALL FSRS configs (v1–v6 + every FSRS-6 variant + FSRS-6-one-step, which predicts via
 `fsrs_v6::predict`). The win = the eval+test predict fraction collapsing from O(N²) to O(N).
+
+## Anki + SM2-trainable — per-card predict (REJECT)
+
+Tried the same per-card predict (forward_states + group-by-card) on Anki and SM2-trainable. Output
+bit-identical (size exact, dLogLoss 0.0), but **both got SLOWER**: Anki ×0.72 (median ratio 1.576,
+one-sided after<before p=1.000), SM2-trainable ×0.75 (median 1.371, p=1.000). **REJECTED & reverted.**
+Reason: their per-step recurrence is CHEAP (interval/ease/EF arithmetic, no `powf` in the loop — the
+single `powd` is only the final forgetting curve), so the O(N²)→O(N) saving on cheap work is tiny,
+while the per-card grouping bookkeeping (a `HashMap<card,Vec>` + a per-card `Vec` allocation in EVERY
+`eval_loss` call, ×6/training over all rows) costs more. Lesson: per-card predict only pays off when
+each recurrence STEP is expensive (FSRS's `powf`/`powd`); for cheap recurrences the grouping overhead
+dominates. (Mirrors the earlier Anki-VJP reject: at low cost-per-step, the bookkeeping isn't worth it.)
+
+## ACT-R — reuse ln(a) in the inner power (a.powd(e) -> a.ln().mul(e).exp()) (2026-06-21)
+
+**Bottleneck:** ACT-R's O(N²)-per-card activation sum computes `a.powd(exponent[j])` per pair. Even
+after the powd value-reuse fix, `powd` does a `powf` (itself ln+exp internally) PLUS a separate `ln`
+for the exponent-derivative `de = v·ln(a)` — 2 ln + 1 exp = 3 transcendentals per pair. ACT-R's cost
+is dominated by these transcendentals (not the gradient arithmetic — so a reverse-mode VJP would NOT
+help: it does the same number of powf/ln).
+
+**Change (`src/models/act_r.rs`):** compute `a^exponent[j]` as `a.ln().mul(exponent[j]).exp()` —
+`ln(a)` is computed ONCE (as a `Dual`) and reused for both the value and the gradient → 1 ln + 1 exp
+= 2 transcendentals per pair. The value becomes `exp(e·ln a)` instead of `powf(a,e)` (same math, ~1
+ULP different); `a` clamped to 1 ⇒ ln a = 0 ⇒ term = 1 (zero grad), matching the clamp.
+
+**Speed (ACT-R --short --secs, 200 users, 1 thread each, SIMULTANEOUS, CPU locked):** total time_ms
+572927 → 370680 = **×1.55 faster**; median ratio 0.7931 (×1.26); Wilcoxon one-sided p=6.467e-34.
+**Correctness:** size exact, mean dLogLoss **+0.00000000**, max|d| 0.0 (the ~1-ULP value shift didn't
+move LogLoss at the 6-dp reported precision). Full suite green (f32 19 / fp64 43). **ACCEPT.**
+Cumulative ACT-R from the original O(N³): 1295820 → 787312 (per-card) → 554267 (powd) → 370680 = ×3.5.
+Lesson: ACT-R is transcendental-bound; cutting a `ln`/`exp` per inner pair beats any gradient-arithmetic
+trick (VJP). The remaining cost is 1 ln + 1 exp per pair (irreducible without changing the model math).

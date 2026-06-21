@@ -34,6 +34,6 @@ __pycache__/
 /_speedup/phase2/*/
 /_speedup/phase3/*/
 # Detached-timing completion-marker flag files
-_speedup/**/*_TIMING_DONE
+_speedup/**/*_DONE
 # Stray mangled-redirect logs
 C*Temp*.log

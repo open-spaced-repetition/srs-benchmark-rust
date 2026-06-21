@@ -101,6 +101,9 @@ two_buttons, S0, default, train_equals_test, the non-`--secs` path. **Smart pres
   `Dual::powd` (`autodiff.rs`) reuses the value (`da = e·aᵉ/a`) instead of a 2nd `powf` — ×1.35 more on
   ACT-R, predictions bit-identical (P=0 elides the dead grad terms), grad perturbed ~1e-16. (2) helps
   every forward-mode-`Dual` grad user (ACT-R, Anki, FSRS-6-one-step); the VJP'd algos hand-write grads.
+  (3) ACT-R inner power `a.ln().mul(e).exp()` instead of `a.powd(e)` — `ln a` computed once & reused for
+  value+grad (vs powf's internal ln + a separate one), ×1.55 more; value `exp(e·ln a)` ~1 ULP off powf,
+  output bit-identical at 6-dp. ACT-R cumulative ≈×3.5; it's transcendental-bound (a VJP would NOT help).
   **FSRS v1–v6 per-card predict** (2026-06-21): `predict`/`eval_loss` replayed the recurrence per row
   (O(N²)/card); extracted `forward_states` (records stability after each review) so `predict` runs it
   ONCE per card, each row reads `states[pos-1]` → O(N)/card, **bit-identical**. ×1.36 FSRS-6 / ×1.27
