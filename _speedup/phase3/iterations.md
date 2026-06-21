@@ -168,3 +168,19 @@ finite-difference / forward-mode-oracle unit tests (gated to `--features fp64`) 
   reverse-mode's bookkeeping can cost more than the forward-mode P-loop it removes.)
 - **Champion (end of batch):** `target/release/script_p3_iter10.exe` (= v1–v6 + SM2 + DASH[ACT-R]
   reverse-mode; Anki/ACT-R forward-mode).
+
+## ACT-R — per-card recurrence reuse (2026-06-21)
+
+**Bottleneck:** ACT-R's `retention` recomputed the full O(pos²) base-level-activation recurrence
+`m[i]` from scratch for EVERY row, and a card with N reviews has N rows (pos 0..N-1) → effectively
+**O(N³) per card** (N capped at 2·max_seq_len = 128). `m[i]` is a prefix shared by all of a card's rows.
+
+**Change (`src/models/act_r.rs`):** split `retention` into `recurrence` (returns all `m[i]` for the
+card prefix) + `ret_from_m` (per-row sigmoid); new `Model::retentions` groups the idx rows by
+`card_idx` and runs the recurrence ONCE per card (up to the deepest pos needed), reused by every row
+→ **O(N²) per card**. predict/grad use it; `retention` kept as a thin wrapper for the grad unit test.
+
+**Speed (ACT-R --short --secs, 200 users, 1 thread each, SIMULTANEOUS, CPU locked at base):** total
+time_ms 1295820 → 787312 = **×1.65 faster**; median per-user ratio 0.650 (×1.54); Wilcoxon one-sided
+(after<before) **p = 8.308e-30**. **Correctness:** size exact, mean dLogLoss **+0.00000000**, max|d|
+0.0 (bit-identical — same math). **ACCEPT.** Applies to all 3 ACT-R configs (still forward-mode Dual<5>).

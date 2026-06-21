@@ -94,8 +94,10 @@ two_buttons, S0, default, train_equals_test, the non-`--secs` path. **Smart pres
   SM2-trainable, DASH[ACT-R] (closed-form), and FSRS-7 (+`f32x8` SIMD). **⚠ These are MANUAL VJPs of
   each model's specific forward — changing a model's math requires re-deriving its backward; the
   `--features fp64` `*_grad_matches_*` oracle tests guard against drift.** Still forward-mode: Anki
-  (VJP wasn't a net win at NP=7), ACT-R (real cost is its O(reviews²) all-pairs value sum — a separate
-  algorithmic task), FSRS-6-one-step (hand-derived single-transition grad already).
+  (VJP wasn't a net win at NP=7), ACT-R, FSRS-6-one-step (hand-derived single-transition grad already).
+  **ACT-R got an algorithmic (not VJP) speedup** (2026-06-21): its activation recurrence `m[i]` is a
+  prefix shared by all of a card's rows, so `Model::retentions` computes it ONCE per card instead of
+  per row (O(N³)→O(N²)/card) — ×1.65 faster, bit-identical (`_speedup/phase3/iterations.md`).
 - **Speedup protocol** (if resumed): 200 users, before/after run SIMULTANEOUSLY 1-thread-each, accept
   iff Wilcoxon p<0.01 AND faster AND within ±0.0005 of a FROZEN baseline AND size exact; log EVERY
   iteration with the exact p-value in `_speedup/phase{2,3}/iterations.md` (harness there too).

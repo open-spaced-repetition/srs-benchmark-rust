@@ -22,8 +22,12 @@ const INIT_W: [f64; NP] = [
     0.025,
 ];
 
-/// `dt_incl` = `dt_active[0..=pos]` (length pos+1). Returns the retention dual.
-fn retention<const P: usize>(dt_incl: &[f64], w: &[Dual<P>; NP]) -> Dual<P> {
+/// Base-level activation `m[i]` for the WHOLE card prefix `dt_incl` (= `dt_active[0..=pos]`, length
+/// pos+1): `m[0] = 0` (only `exp(m[0]) = 0` matters, via `exponent[0] = -a`); for i≥1, `m[i] =
+/// ln Σ_{j<i} ((sp[i]-sp[j])·86400·h).clamp_min(1)^-(c·exp(m[j])+a)`. Returns ALL `m[i]` so every row
+/// of the card reuses one O(n²) pass — the row at pos p only needs `m[p]` — instead of recomputing
+/// the recurrence from scratch per row (which made the per-card cost O(n³)).
+fn recurrence<const P: usize>(dt_incl: &[f64], w: &[Dual<P>; NP]) -> Vec<Dual<P>> {
     let n = dt_incl.len(); // pos+1
     // sp[i] = cumulative days up to review i.
     let mut sp = vec![0.0f64; n];
@@ -32,9 +36,8 @@ fn retention<const P: usize>(dt_incl: &[f64], w: &[Dual<P>; NP]) -> Dual<P> {
         acc += dt_incl[i];
         sp[i] = acc;
     }
-    // m[0] = -inf (only used as exp(m[0]) = 0). m[i] for i>=1 via recurrence.
+    let mut m = vec![Dual::<P>::c(0.0); n]; // m[0] = 0 by convention
     // exponent[j] = -(c·exp(m[j]) + a) depends only on j — hoist it out of the inner loop.
-    let mut mp = Dual::<P>::c(0.0);
     let mut exponent: Vec<Dual<P>> = vec![Dual::c(0.0); n];
     exponent[0] = w[0].neg(); // -(c·0 + a)
     for i in 1..n {
@@ -44,12 +47,24 @@ fn retention<const P: usize>(dt_incl: &[f64], w: &[Dual<P>; NP]) -> Dual<P> {
             let a = w[4].mul_c(dt_sec).clamp_min(1.0); // (dt_sec·h).clamp_min(1)
             sum = sum.add(a.powd(exponent[j]));
         }
-        mp = sum.ln(); // m[i]
-        exponent[i] = w[1].mul(mp.exp()).add(w[0]).neg();
+        m[i] = sum.ln(); // m[i]
+        exponent[i] = w[1].mul(m[i].exp()).add(w[0]).neg();
     }
-    // activation(m[pos]) = 1 / (1 + exp((tau - m)/s)),  tau=w3, s=w2 (m[pos] = last m)
-    let z = w[3].sub(mp).div(w[2]); // (tau - m)/s
+    m
+}
+
+/// retention from activation `m[pos]`: `1 / (1 + exp((tau - m)/s))`, tau=w3, s=w2.
+#[inline]
+fn ret_from_m<const P: usize>(m_pos: Dual<P>, w: &[Dual<P>; NP]) -> Dual<P> {
+    let z = w[3].sub(m_pos).div(w[2]); // (tau - m)/s
     Dual::<P>::c(1.0).div(z.exp().add_c(1.0))
+}
+
+/// `dt_incl` = `dt_active[0..=pos]`. Single-row retention (recurrence then the last activation) —
+/// kept for the gradient unit test; the hot path uses [`Model::retentions`] (one recurrence per card).
+fn retention<const P: usize>(dt_incl: &[f64], w: &[Dual<P>; NP]) -> Dual<P> {
+    let m = recurrence(dt_incl, w);
+    ret_from_m(m[m.len() - 1], w)
 }
 
 struct Model<'a> {
@@ -74,8 +89,24 @@ impl<'a> Model<'a> {
         }
         Model { ds, rows: out_rows, weights: out_w }
     }
-    fn ret<const P: usize>(&self, w: &[Dual<P>; NP], row: &Row) -> Dual<P> {
-        retention(self.ds.dt_active_incl(row), w)
+    /// Retention for each `idx` row, grouped by card so the O(n²) recurrence runs ONCE per card (up
+    /// to the max pos needed), reused by every row of that card. Output is in `idx` order.
+    fn retentions<const P: usize>(&self, w: &[Dual<P>; NP], idx: &[usize]) -> Vec<Dual<P>> {
+        use std::collections::HashMap;
+        let mut by_card: HashMap<u32, Vec<usize>> = HashMap::new();
+        for (k, &i) in idx.iter().enumerate() {
+            by_card.entry(self.rows[i].card_idx).or_default().push(k);
+        }
+        let mut out = vec![Dual::<P>::c(0.0); idx.len()];
+        for ks in by_card.values() {
+            // One recurrence per card, up to the deepest pos any of its rows here needs.
+            let kmax = *ks.iter().max_by_key(|&&k| self.rows[idx[k]].pos).unwrap();
+            let m = recurrence(self.ds.dt_active_incl(&self.rows[idx[kmax]]), w);
+            for &k in ks {
+                out[k] = ret_from_m(m[self.rows[idx[k]].pos as usize], w);
+            }
+        }
+        out
     }
 }
 
@@ -100,13 +131,14 @@ impl BatchModel for Model<'_> {
     }
     fn predict(&self, params: &[f64], idx: &[usize]) -> Vec<f64> {
         let wd: [Dual<0>; NP] = std::array::from_fn(|k| Dual::c(params[k]));
-        idx.iter().map(|&i| self.ret(&wd, &self.rows[i]).v).collect()
+        self.retentions(&wd, idx).iter().map(|r| r.v).collect()
     }
     fn grad(&self, params: &[f64], idx: &[usize]) -> Vec<f64> {
         let wd: [Dual<NP>; NP] = std::array::from_fn(|k| Dual::param(k, params[k]));
+        let rets = self.retentions(&wd, idx);
         let mut g = vec![0.0f64; NP];
-        for &i in idx {
-            let ret = self.ret(&wd, &self.rows[i]);
+        for (kk, &i) in idx.iter().enumerate() {
+            let ret = rets[kk];
             let p = ret.v;
             let denom = (p * (1.0 - p)).max(1e-12);
             let dl = self.weights[i] * (p - self.rows[i].y as f64) / denom;

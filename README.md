@@ -322,7 +322,10 @@ oracle tests guard this). Models with hand-written gradients: **FSRS-7** (+ `f32
 v1–v6 / FSRS-4.5 / SM2-trainable / DASH[ACT-R]** (f64). The speedup work is logged iteration-by-
 iteration in `_speedup/phase2/iterations.md` (FSRS-7) and `_speedup/phase3/iterations.md` (the rest),
 each gated on a Wilcoxon signed-rank timing test (p < 0.01) and a per-algo correctness band. ACT-R and
-Anki remain on forward-mode autodiff (a VJP wasn't a net win for them).
+Anki keep forward-mode autodiff (a VJP wasn't a net win for them), but ACT-R got a separate
+*algorithmic* speedup: its activation recurrence `m[i]` is a prefix shared by all of a card's rows, so
+it's now computed **once per card** instead of recomputed from scratch per row (O(N³)→O(N²) per card)
+— ×1.65 faster (`ACT-R --short --secs`, bit-identical output).
 
 ## Status
 
