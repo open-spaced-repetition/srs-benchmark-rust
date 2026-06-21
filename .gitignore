@@ -27,6 +27,9 @@ __pycache__/
 *.pyc
 .venv/
 
+# 10k-user benchmark run scaffolding (snapshot binary + logs); results land in result/ (also ignored)
+/_run10k/
+
 # Speedup scratch run dirs (timing/correctness intermediates); keep the harness + iterations.md + baselines
 /_speedup/phase2/*/
 # Stray mangled-redirect logs

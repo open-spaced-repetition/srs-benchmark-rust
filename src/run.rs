@@ -229,8 +229,11 @@ pub fn run(cfg: &Config) -> Result<(), String> {
         if cfg.cluster_sweep {
             return run_smart_sweep(cfg);
         }
-        if cfg.cluster_method == "hdbscan" {
-            return Err("--cluster_method hdbscan is only supported with --cluster_sweep".into());
+        if cfg.cluster_method == "hdbscan" || cfg.cluster_method == "optimal" {
+            return Err(format!(
+                "--cluster_method {} is only supported with --cluster_sweep",
+                cfg.cluster_method
+            ));
         }
     }
 
@@ -282,10 +285,14 @@ pub fn run(cfg: &Config) -> Result<(), String> {
 /// Resume is per-experiment: a user is recomputed unless present in EVERY experiment file.
 fn run_smart_sweep(cfg: &Config) -> Result<(), String> {
     let hdbscan = cfg.cluster_method == "hdbscan";
-    let suffixes = if hdbscan {
-        crate::models::fsrs_v7::hdbscan_sweep_suffixes()
+    let optimal = cfg.cluster_method == "optimal";
+    let kl = cfg.cluster_distance == "kl";
+    let suffixes = if optimal {
+        crate::models::fsrs_v7::opt_sweep_suffixes()
+    } else if hdbscan {
+        crate::models::fsrs_v7::hdbscan_sweep_suffixes(kl)
     } else {
-        crate::models::fsrs_v7::hier_sweep_suffixes()
+        crate::models::fsrs_v7::hier_sweep_suffixes(kl)
     };
     let users = enumerate_users(&cfg.data_path, cfg.max_user_id)?;
     fs::create_dir_all("result").map_err(|e| e.to_string())?;
@@ -362,7 +369,9 @@ fn sweep_user(cfg: &Config, user_id: i64, hdbscan: bool) -> Result<Vec<Value>, S
     }
     let prep_s = t0.elapsed().as_secs_f64();
 
-    let outs = if hdbscan {
+    let outs = if cfg.cluster_method == "optimal" {
+        crate::models::fsrs_v7::process_optimal_sweep(&ds, cfg)
+    } else if hdbscan {
         crate::models::fsrs_v7::process_hdbscan_sweep(&ds, cfg)
     } else {
         crate::models::fsrs_v7::process_smart_sweep(&ds, cfg)

@@ -212,7 +212,7 @@ bit-for-bit.*
 All flags match the Python `script.py`
 ([upstream docs](https://github.com/open-spaced-repetition/srs-benchmark#scriptpy-options)),
 except the smart-preset flags (`--partitions smart`, `--cluster_method`, `--cluster_threshold`,
-`--cluster_sweep`), which are a Rust-only extension (see [Smart presets](#smart-presets) below).
+`--cluster_sweep`, `--cluster_distance`), which are a Rust-only extension (see [Smart presets](#smart-presets) below).
 
 | Flag | Description | Default |
 | --- | --- | --- |
@@ -228,9 +228,10 @@ except the smart-preset flags (`--partitions smart`, `--cluster_method`, `--clus
 | `--sched_penalties` | FSRS-7 scheduling penalties (penalty 1 & 2). | off |
 | `--two_buttons` | Treat Hard and Easy as Good (rating remap). | off |
 | `--partitions` | Train per partition: `none`, `deck`, `preset`, or `smart`. | `none` |
-| `--cluster_method` | Smart-preset clustering: `single`/`complete`/`average`/`centroid`/`ward`, or `hdbscan` (with `--partitions smart`; `hdbscan` requires `--cluster_sweep`). | `ward` |
-| `--cluster_threshold` | Smart-preset Mahalanobis cut threshold (with `--partitions smart`). | `12.0` |
-| `--cluster_sweep` | Run all 30 smart-preset experiments in one pass (shares per-deck training). | off |
+| `--cluster_method` | Smart-preset clustering: `single`/`complete`/`average`/`centroid`/`ward`, `hdbscan`, or `optimal` (objective-driven partition search). `hdbscan`/`optimal` require `--cluster_sweep`. | `ward` |
+| `--cluster_threshold` | Smart-preset distance cut threshold (with `--partitions smart`); on the Mahalanobis or KL scale per `--cluster_distance`. | `12.0` |
+| `--cluster_sweep` | Run a whole smart-preset experiment matrix in one pass (shares per-deck training). | off |
+| `--cluster_distance` | Smart-preset distance metric: `mahalanobis` (whitened FSRS-7 params) or `kl` (symmetric KL of the decks' predictions). | `mahalanobis` |
 | `--n_splits` | Number of `TimeSeriesSplit` folds. | `5` |
 | `--batch_size` | Training batch size. | `512` |
 | `--max_seq_len` | Max sequence length for batching (also caps reviews/card at `2×`). | `64` |
@@ -291,6 +292,25 @@ of them vs the baseline with `python _smart/sweep_report.py`. The hierarchical c
 SciPy exactly and HDBSCAN reproduces sklearn (both unit-tested in `src/cluster.rs` / `src/hdbscan.rs`;
 HDBSCAN matches except an unreplicable numpy-argsort tie-break on `min_samples>1`+`leaf`). The
 covariance recipe mirrors `_smart/fit_covariance.py`.
+
+**KL-divergence distance (`--cluster_distance kl`)** swaps the parameter-Mahalanobis metric for the
+similarity of the decks' *predictions*: each deck's trained model predicts on the user's own rows, and
+the distance is the mean symmetric Bernoulli KL between two decks. KL has the closed form
+`½·(pₐ−p_b)·(logit pₐ − logit p_b)`, and (since users have up to ~5000 decks, making the O(decks²·rows)
+matrix otherwise intractable) it's estimated on a 256-row strided subsample — same scale, so the
+calibrated KL thresholds in `_smart/kl_calibrate.py` still hold. The same 30 hierarchical + 16 HDBSCAN
+matrix runs with `--cluster_distance kl --cluster_sweep`, writing `…-smart-kl-<suffix>.jsonl`.
+
+**Optimal partition (`--cluster_method optimal --cluster_sweep`)** drops distance clustering entirely
+and searches the *partition* space for the one minimizing AIC/BIC on the training fold (no test
+peeking): exhaustive over all set partitions for ≤6 decks, greedy agglomerative for 7–12, and a
+Mahalanobis-or-KL pre-merge to 12 pseudo-decks above that. It writes 4 files (`…-smart-opt-{bic,aic}-{maha,kl}.jsonl`).
+
+**Finding (1000 users):** none of it beats the per-user global model. Across both distance metrics
+(Mahalanobis, KL), both cluster shapes (hierarchical, HDBSCAN), and the honest AIC/BIC optimal
+partition, every config's mean LogLoss is ≥ baseline except by f32 noise — pooling all of a user's
+decks into one model wins. Results are tabulated in `Smart Preset Assignment.xlsx`; stripped per-user
+outputs are archived in `_smart/results/`.
 
 ## Performance
 

@@ -75,6 +75,39 @@ pub fn fcluster_distance(points: &[Vec<f64>], method: Method, threshold: f64) ->
         }
     }
 
+    fcluster_from_condensed(condensed, n, method, threshold)
+}
+
+/// Same flat-clustering cut as [`fcluster_distance`], but from a **precomputed** full `n×n` symmetric
+/// distance matrix (e.g. KL divergence between deck predictions) instead of Euclidean over points.
+/// single/complete/average are valid for any distance matrix; centroid/ward apply the Lance-Williams
+/// update as SciPy does (they implicitly assume Euclidean, so on a non-Euclidean matrix they are a
+/// heuristic — kept so the KL sweep can reuse the full 5-linkage matrix).
+pub fn fcluster_distance_matrix(dist: &[Vec<f64>], method: Method, threshold: f64) -> Vec<usize> {
+    let n = dist.len();
+    if n == 0 {
+        return Vec::new();
+    }
+    if n == 1 {
+        return vec![0];
+    }
+    let mut condensed = Vec::with_capacity(n * (n - 1) / 2);
+    for i in 0..n {
+        for j in (i + 1)..n {
+            condensed.push(dist[i][j]);
+        }
+    }
+    fcluster_from_condensed(condensed, n, method, threshold)
+}
+
+/// Shared core: build the linkage tree from a condensed distance matrix and apply SciPy's
+/// `fcluster(criterion="distance")` monotone max-distance cut. `n` ≥ 2.
+fn fcluster_from_condensed(
+    mut condensed: Vec<f64>,
+    n: usize,
+    method: Method,
+    threshold: f64,
+) -> Vec<usize> {
     let dend = linkage(&mut condensed, n, method.kodama());
     let steps = dend.steps();
 
@@ -100,6 +133,66 @@ pub fn fcluster_distance(points: &[Vec<f64>], method: Method, threshold: f64) ->
     }
 
     // Canonicalize union-find roots to first-occurrence 0-based labels.
+    let mut map: std::collections::HashMap<usize, usize> = std::collections::HashMap::new();
+    let mut out = Vec::with_capacity(n);
+    for i in 0..n {
+        let root = uf.find(i);
+        let next = map.len();
+        out.push(*map.entry(root).or_insert(next));
+    }
+    out
+}
+
+/// Agglomerative merge to **exactly `k` clusters** from points (Euclidean): cut the dendrogram after
+/// its `n−k` closest merges. Used to pre-aggregate >12 decks into 12 pseudo-decks before the
+/// optimal-partition search. `k ≥ n` ⇒ every point its own cluster.
+pub fn fcluster_k_points(points: &[Vec<f64>], method: Method, k: usize) -> Vec<usize> {
+    let n = points.len();
+    if n <= k {
+        return (0..n).collect();
+    }
+    let mut condensed = Vec::with_capacity(n * (n - 1) / 2);
+    for i in 0..n {
+        for j in (i + 1)..n {
+            let s: f64 = points[i].iter().zip(&points[j]).map(|(a, b)| (a - b) * (a - b)).sum();
+            condensed.push(s.sqrt());
+        }
+    }
+    fcluster_k_from_condensed(condensed, n, method, k)
+}
+
+/// Same as [`fcluster_k_points`] but from a precomputed full `n×n` distance matrix (the KL path).
+pub fn fcluster_k_matrix(dist: &[Vec<f64>], method: Method, k: usize) -> Vec<usize> {
+    let n = dist.len();
+    if n <= k {
+        return (0..n).collect();
+    }
+    let mut condensed = Vec::with_capacity(n * (n - 1) / 2);
+    for i in 0..n {
+        for j in (i + 1)..n {
+            condensed.push(dist[i][j]);
+        }
+    }
+    fcluster_k_from_condensed(condensed, n, method, k)
+}
+
+/// Union the first `n−k` merges of the linkage tree (dendrogram steps are in non-decreasing
+/// dissimilarity) to leave exactly `k` connected components; canonicalize to 0-based labels.
+fn fcluster_k_from_condensed(mut condensed: Vec<f64>, n: usize, method: Method, k: usize) -> Vec<usize> {
+    let dend = linkage(&mut condensed, n, method.kodama());
+    let steps = dend.steps();
+    let n_merges = n - k;
+    let mut rep = vec![0usize; steps.len()];
+    let mut uf = UnionFind::new(n);
+    for (s, st) in steps.iter().enumerate() {
+        let (a, b) = (st.cluster1, st.cluster2);
+        let rep_a = if a < n { a } else { rep[a - n] };
+        let rep_b = if b < n { b } else { rep[b - n] };
+        rep[s] = rep_a;
+        if s < n_merges {
+            uf.union(rep_a, rep_b);
+        }
+    }
     let mut map: std::collections::HashMap<usize, usize> = std::collections::HashMap::new();
     let mut out = Vec::with_capacity(n);
     for i in 0..n {
@@ -230,5 +323,53 @@ mod tests {
     fn trivial_sizes() {
         assert_eq!(fcluster_distance(&[], Method::Ward, 1.0), Vec::<usize>::new());
         assert_eq!(fcluster_distance(&[vec![1.0, 2.0]], Method::Ward, 1.0), vec![0]);
+    }
+
+    // Build a full Euclidean distance matrix from points (so the precomputed-matrix path can be
+    // checked against the points path).
+    fn euclid_matrix(points: &[Vec<f64>]) -> Vec<Vec<f64>> {
+        let n = points.len();
+        let mut d = vec![vec![0.0f64; n]; n];
+        for i in 0..n {
+            for j in (i + 1)..n {
+                let s: f64 = points[i].iter().zip(&points[j]).map(|(a, b)| (a - b) * (a - b)).sum();
+                d[i][j] = s.sqrt();
+                d[j][i] = s.sqrt();
+            }
+        }
+        d
+    }
+
+    #[test]
+    fn matrix_path_matches_points_path() {
+        // fcluster_distance_matrix on the Euclidean matrix == fcluster_distance on the points.
+        let pts = decks10();
+        let mat = euclid_matrix(&pts);
+        for m in [Method::Single, Method::Complete, Method::Average, Method::Centroid, Method::Ward] {
+            for t in [5.0, 30.0, 0.0] {
+                assert_eq!(
+                    fcluster_distance_matrix(&mat, m, t),
+                    fcluster_distance(&pts, m, t),
+                    "method {m:?} threshold {t}"
+                );
+            }
+        }
+        assert_eq!(fcluster_distance_matrix(&[], Method::Ward, 1.0), Vec::<usize>::new());
+        assert_eq!(fcluster_distance_matrix(&[vec![0.0]], Method::Ward, 1.0), vec![0]);
+    }
+
+    #[test]
+    fn merge_to_exactly_k() {
+        // Two well-separated blobs (4+3): cutting to k=2 must recover them; k≥n ⇒ singletons.
+        let pts = two_blobs();
+        let lab = fcluster_k_points(&pts, Method::Average, 2);
+        assert_eq!(lab.iter().copied().max().unwrap() + 1, 2, "should be exactly 2 clusters");
+        assert_eq!(lab, vec![0, 0, 0, 0, 1, 1, 1]);
+        // Exactly k components for a range of k.
+        for k in 1..=7 {
+            let l = fcluster_k_points(&pts, Method::Average, k);
+            assert_eq!(l.iter().copied().max().unwrap() + 1, k.min(7), "k={k}");
+        }
+        assert_eq!(fcluster_k_points(&pts, Method::Average, 10), vec![0, 1, 2, 3, 4, 5, 6]);
     }
 }

@@ -447,6 +447,19 @@ struct DeckSplit {
     deck_ids: Vec<i64>,
     points: Vec<Vec<f64>>,
     global_w: Option<Vec<f64>>,
+    /// KL-distance geometry (only when `--cluster_distance kl`); `points` is empty in that case.
+    kl: Option<KlGeom>,
+}
+
+/// Prediction-space geometry for the KL-divergence clustering metric: the symmetric per-deck KL
+/// distance matrix, plus the KL distance from the user's global model to each deck (for assigning
+/// test-only decks). Computed once per split and shared across every clustering experiment.
+struct KlGeom {
+    /// `dist[i][j]` = mean over the user's rows of the symmetric KL divergence between deck `i`'s and
+    /// deck `j`'s recall predictions.
+    dist: Vec<Vec<f64>>,
+    /// `global_dist[i]` = same KL distance from the user-level (global) model to deck `i`.
+    global_dist: Option<Vec<f64>>,
 }
 
 /// Train per-deck params for one split and whiten them — the expensive step shared by all
@@ -463,7 +476,6 @@ fn compute_deck_split(
 ) -> DeckSplit {
     use std::collections::HashSet;
     let (deck_ids, deck_w, ul) = train_partition_weights(ds, train, cfg, tc);
-    let points: Vec<Vec<f64>> = deck_ids.iter().map(|d| cov.whiten(&deck_w[d])).collect();
     let deck_set: HashSet<i64> = deck_ids.iter().copied().collect();
     let has_test_only = test.iter().any(|r| !deck_set.contains(&r.partition));
     let global_w = ul.or_else(|| {
@@ -473,7 +485,159 @@ fn compute_deck_split(
             None
         }
     });
-    DeckSplit { deck_ids, points, global_w }
+    if cfg.cluster_distance == "kl" {
+        // Prediction-space geometry: cluster decks by how similarly their trained models predict on
+        // the user's own rows (the covariance/whitening is unused on this path).
+        let kl = compute_kl_geom(ds, cfg, train, &deck_ids, &deck_w, global_w.as_deref());
+        DeckSplit { deck_ids, points: Vec::new(), global_w, kl: Some(kl) }
+    } else {
+        let points: Vec<Vec<f64>> = deck_ids.iter().map(|d| cov.whiten(&deck_w[d])).collect();
+        DeckSplit { deck_ids, points, global_w, kl: None }
+    }
+}
+
+/// Clamp predictions to (0,1) and precompute per-row logits. Symmetric Bernoulli KL collapses to
+/// ½·(pₐ−p_b)·(logit pₐ − logit p_b), so the only `ln`s are these D×rows logits computed once per
+/// deck — the O(decks²) distance loop ([`sym_kl`]) is then a plain dot product (critical: users have
+/// up to ~5000 decks, and `ln` in that loop made the sweep take weeks).
+fn kl_prep(p: &[f64]) -> (Vec<f64>, Vec<f64>) {
+    const EPS: f64 = 1e-6;
+    let pc: Vec<f64> = p.iter().map(|&x| x.clamp(EPS, 1.0 - EPS)).collect();
+    let lg: Vec<f64> = pc.iter().map(|&x| x.ln() - (1.0 - x).ln()).collect();
+    (pc, lg)
+}
+
+/// Mean symmetric Bernoulli KL between two prepped (clamped-p, logit) vectors: mean over rows of
+/// ½·(pₐ−p_b)·(logitₐ − logit_b). Empty ⇒ 0.
+fn sym_kl(pa: &[f64], la: &[f64], pb: &[f64], lb: &[f64]) -> f64 {
+    if pa.is_empty() {
+        return 0.0;
+    }
+    let mut s = 0.0;
+    for r in 0..pa.len() {
+        s += (pa[r] - pb[r]) * (la[r] - lb[r]);
+    }
+    0.5 * s / pa.len() as f64
+}
+
+/// Reference per-row symmetric KL (the slow `ln`-in-loop form) — kept only to prove `sym_kl` matches.
+#[cfg(test)]
+fn bern_kl(pa: f64, pb: f64) -> f64 {
+    const EPS: f64 = 1e-6;
+    let a = pa.clamp(EPS, 1.0 - EPS);
+    let b = pb.clamp(EPS, 1.0 - EPS);
+    a * (a / b).ln() + (1.0 - a) * ((1.0 - a) / (1.0 - b)).ln()
+}
+
+#[cfg(test)]
+fn mean_sym_kl(a: &[f64], b: &[f64]) -> f64 {
+    if a.is_empty() {
+        return 0.0;
+    }
+    let mut s = 0.0;
+    for k in 0..a.len() {
+        s += 0.5 * (bern_kl(a[k], b[k]) + bern_kl(b[k], a[k]));
+    }
+    s / a.len() as f64
+}
+
+/// Cap on rows used to estimate each KL deck-distance. The KL distance is O(decks²·rows) and users
+/// here have up to ~5000 decks, so the full row set is intractable (weeks). A strided subsample of
+/// this many rows is an unbiased mean-KL estimate at the same scale, so the calibrated thresholds
+/// still apply; clustering is robust to the small per-pair estimation noise.
+const KL_DIST_CAP: usize = 256;
+
+/// Up to `cap` row indices spread across `0..n` by stride (all of them if `n ≤ cap`).
+fn kl_eval_indices(n: usize, cap: usize) -> Vec<usize> {
+    if n <= cap {
+        return (0..n).collect();
+    }
+    (0..cap).map(|i| i * n / cap).collect()
+}
+
+/// Build the KL geometry for one split: predict every deck's trained params on a single model built
+/// over all of this split's training rows (so the prediction vectors are aligned), then form the
+/// symmetric per-deck KL distance matrix and the global-model→deck distances. Distances are estimated
+/// on a strided subsample of rows ([`KL_DIST_CAP`]) to keep the O(decks²·rows) cost tractable.
+fn compute_kl_geom(
+    ds: &Dataset,
+    cfg: &Config,
+    train: &[Row],
+    deck_ids: &[i64],
+    deck_w: &std::collections::HashMap<i64, Vec<f64>>,
+    global_w: Option<&[f64]>,
+) -> KlGeom {
+    let nd = deck_ids.len();
+    let tm = Model::build(ds, train, &vec![1.0; train.len()], None, cfg);
+    let idx = kl_eval_indices(tm.rows.len(), KL_DIST_CAP);
+    let prep: Vec<(Vec<f64>, Vec<f64>)> =
+        deck_ids.iter().map(|d| kl_prep(&tm.predict(&deck_w[d], &idx))).collect();
+
+    let mut dist = vec![vec![0.0f64; nd]; nd];
+    for i in 0..nd {
+        for j in (i + 1)..nd {
+            let dval = sym_kl(&prep[i].0, &prep[i].1, &prep[j].0, &prep[j].1);
+            dist[i][j] = dval;
+            dist[j][i] = dval;
+        }
+    }
+    let global_dist = global_w.map(|gw| {
+        let (gpc, glg) = kl_prep(&tm.predict(gw, &idx));
+        prep.iter().map(|(pc, lg)| sym_kl(&gpc, &glg, pc, lg)).collect::<Vec<f64>>()
+    });
+    maybe_dump_kl(&dist);
+    KlGeom { dist, global_dist }
+}
+
+/// Calibration hook: if `SMART_KL_DUMP` is set to a path, append this split's off-diagonal KL
+/// distances (one per line) so the 6 hierarchical KL thresholds can be chosen from real data.
+fn maybe_dump_kl(dist: &[Vec<f64>]) {
+    use std::io::Write;
+    use std::sync::{Mutex, OnceLock};
+    static DUMP: OnceLock<Option<Mutex<std::fs::File>>> = OnceLock::new();
+    let slot = DUMP.get_or_init(|| {
+        std::env::var("SMART_KL_DUMP").ok().map(|path| {
+            let f = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(path)
+                .expect("open SMART_KL_DUMP file");
+            Mutex::new(f)
+        })
+    });
+    if let Some(m) = slot {
+        let n = dist.len();
+        let mut buf = String::new();
+        for i in 0..n {
+            for j in (i + 1)..n {
+                buf.push_str(&format!("{}\n", dist[i][j]));
+            }
+        }
+        if !buf.is_empty() {
+            let _ = m.lock().unwrap().write_all(buf.as_bytes());
+        }
+    }
+}
+
+/// Nearest cluster (by mean KL distance from the user's global model to the cluster's decks) — the
+/// home for a deck that appears in this split's test set but had no training rows.
+fn nearest_cluster_kl(global_dist: &[f64], labels: &[usize], nclusters: usize) -> usize {
+    let mut best = (0usize, f64::INFINITY);
+    for c in 0..nclusters {
+        let mut sum = 0.0;
+        let mut cnt = 0usize;
+        for (i, &l) in labels.iter().enumerate() {
+            if l == c {
+                sum += global_dist[i];
+                cnt += 1;
+            }
+        }
+        let m = if cnt > 0 { sum / cnt as f64 } else { f64::INFINITY };
+        if m < best.1 {
+            best = (c, m);
+        }
+    }
+    best.0
 }
 
 /// A single clustering experiment's spec: hierarchical linkage (method, threshold) or HDBSCAN
@@ -498,6 +662,20 @@ fn cluster_decks(points: &[Vec<f64>], spec: &SmartCluster) -> Vec<usize> {
     }
 }
 
+/// Same as [`cluster_decks`] but from a precomputed KL distance matrix (the `--cluster_distance kl`
+/// path); HDBSCAN noise decks are reassigned to the nearest cluster by mean KL distance.
+fn cluster_decks_dist(dist: &[Vec<f64>], spec: &SmartCluster) -> Vec<usize> {
+    match spec {
+        SmartCluster::Hier(method, threshold) => {
+            crate::cluster::fcluster_distance_matrix(dist, *method, *threshold)
+        }
+        SmartCluster::Hdbscan { mcs, ms, leaf } => {
+            let raw = crate::hdbscan::hdbscan_precomputed(dist, *mcs, *ms, *leaf);
+            crate::hdbscan::noise_to_nearest_dist(dist, &raw)
+        }
+    }
+}
+
 /// One clustering experiment on a precomputed [`DeckSplit`]: cluster decks, train one param set per
 /// cluster ("smart preset"), predict this split's test rows (appending to `eval_rows`/`p`). A deck
 /// with test rows but no train rows that split is assigned to the cluster nearest (whitened) to the
@@ -518,27 +696,13 @@ fn smart_predict_split(
     let max_seq = cfg.max_seq_len;
     let init_w = INIT_W.to_vec();
 
-    let labels = cluster_decks(&d.points, spec);
+    let labels = match &d.kl {
+        Some(kl) => cluster_decks_dist(&kl.dist, spec),
+        None => cluster_decks(&d.points, spec),
+    };
     let nclusters = labels.iter().copied().max().map(|m| m + 1).unwrap_or(0);
     let deck2cluster: HashMap<i64, usize> =
         d.deck_ids.iter().zip(&labels).map(|(&id, &l)| (id, l)).collect();
-
-    // Cluster centroids in whitened space (for nearest-cluster assignment of test-only decks).
-    let dim = cov.dim();
-    let mut centroids = vec![vec![0.0f64; dim]; nclusters];
-    let mut counts = vec![0usize; nclusters];
-    for (i, &c) in labels.iter().enumerate() {
-        for k in 0..dim {
-            centroids[c][k] += d.points[i][k];
-        }
-        counts[c] += 1;
-    }
-    for c in 0..nclusters {
-        let n = counts[c].max(1) as f64;
-        for k in 0..dim {
-            centroids[c][k] /= n;
-        }
-    }
 
     // Per-cluster training. Group train rows by their deck's cluster; an inadequate cluster falls
     // back to the user's global params, then INIT_W.
@@ -561,13 +725,38 @@ fn smart_predict_split(
         })
         .collect();
 
-    // Nearest cluster to the user's global params — the home for test-only decks.
-    let nearest_c: Option<usize> = d.global_w.as_ref().filter(|_| nclusters > 0).map(|gw| {
-        let z = cov.whiten(gw);
-        (0..nclusters)
-            .min_by(|&a, &b| sq_dist(&z, &centroids[a]).total_cmp(&sq_dist(&z, &centroids[b])))
-            .unwrap()
-    });
+    // Nearest cluster to the user's global model — the home for test-only decks. KL path: mean KL
+    // from the global model to the cluster's decks. Mahalanobis path: nearest whitened centroid.
+    let nearest_c: Option<usize> = if nclusters == 0 {
+        None
+    } else {
+        match &d.kl {
+            Some(kl) => {
+                kl.global_dist.as_ref().map(|gd| nearest_cluster_kl(gd, &labels, nclusters))
+            }
+            None => d.global_w.as_ref().map(|gw| {
+                let dim = cov.dim();
+                let mut centroids = vec![vec![0.0f64; dim]; nclusters];
+                let mut counts = vec![0usize; nclusters];
+                for (i, &c) in labels.iter().enumerate() {
+                    for k in 0..dim {
+                        centroids[c][k] += d.points[i][k];
+                    }
+                    counts[c] += 1;
+                }
+                for c in 0..nclusters {
+                    let n = counts[c].max(1) as f64;
+                    for k in 0..dim {
+                        centroids[c][k] /= n;
+                    }
+                }
+                let z = cov.whiten(gw);
+                (0..nclusters)
+                    .min_by(|&a, &b| sq_dist(&z, &centroids[a]).total_cmp(&sq_dist(&z, &centroids[b])))
+                    .unwrap()
+            }),
+        }
+    };
 
     // Predict: group test rows by assigned cluster (sentinel `nclusters` = INIT_W).
     let mut groups: HashMap<usize, Vec<Row>> = HashMap::new();
@@ -625,28 +814,43 @@ const SWEEP_METHODS: [(&str, crate::cluster::Method); 5] = [
 ];
 const SWEEP_THRESHOLDS: [f64; 6] = [1.5, 2.0, 3.0, 5.0, 7.5, 12.0];
 
+/// Hierarchical thresholds for the KL-divergence metric (`--cluster_distance kl`). The Mahalanobis
+/// thresholds above are on a different scale, so these are calibrated from the observed pairwise-KL
+/// distribution (see `_smart/kl_calibrate.py`) to span all-singleton → all-merged.
+// Calibrated from 1.14M observed deck-pair distances (median 0.007, p90 0.019, p99 0.045): span
+// fine (~p13) → collapse (~1 cluster = baseline). See `_smart/kl_calibrate.py`.
+const KL_SWEEP_THRESHOLDS: [f64; 6] = [0.001, 0.003, 0.008, 0.02, 0.05, 0.15];
+
 /// HDBSCAN sweep matrix (16 experiments): min_cluster_size × min_samples × {eom, leaf}.
 const HDBSCAN_MCS: [usize; 4] = [2, 5, 10, 20];
 const HDBSCAN_MS: [usize; 2] = [1, 5];
 
-/// Filename suffixes for the hierarchical sweep, in run order (`<method>-<threshold>`).
-pub fn hier_sweep_suffixes() -> Vec<String> {
+/// Filename suffixes for the hierarchical sweep, in run order (`[kl-]<method>-<threshold>`). `kl`
+/// uses the KL thresholds and a `kl-` prefix so those files sit beside the mahalanobis ones.
+pub fn hier_sweep_suffixes(kl: bool) -> Vec<String> {
+    let prefix = if kl { "kl-" } else { "" };
+    let thr: &[f64] = if kl { &KL_SWEEP_THRESHOLDS } else { &SWEEP_THRESHOLDS };
     let mut v = Vec::new();
     for (mname, _) in SWEEP_METHODS {
-        for &t in &SWEEP_THRESHOLDS {
-            v.push(format!("{mname}-{}", crate::config::fmt_threshold(t)));
+        for &t in thr {
+            v.push(format!("{prefix}{mname}-{}", crate::config::fmt_threshold(t)));
         }
     }
     v
 }
 
-/// Filename suffixes for the HDBSCAN sweep, in run order (`hdbscan-mcs<M>-ms<S>-<eom|leaf>`).
-pub fn hdbscan_sweep_suffixes() -> Vec<String> {
+/// Filename suffixes for the HDBSCAN sweep, in run order (`[kl-]hdbscan-mcs<M>-ms<S>-<eom|leaf>`).
+/// The mcs/ms grid is scale-free, so `kl` only changes the `kl-` prefix (and the geometry used).
+pub fn hdbscan_sweep_suffixes(kl: bool) -> Vec<String> {
+    let prefix = if kl { "kl-" } else { "" };
     let mut v = Vec::new();
     for mcs in HDBSCAN_MCS {
         for ms in HDBSCAN_MS {
             for leaf in [false, true] {
-                v.push(format!("hdbscan-mcs{mcs}-ms{ms}-{}", if leaf { "leaf" } else { "eom" }));
+                v.push(format!(
+                    "{prefix}hdbscan-mcs{mcs}-ms{ms}-{}",
+                    if leaf { "leaf" } else { "eom" }
+                ));
             }
         }
     }
@@ -696,9 +900,11 @@ fn sweep_specs(ds: &Dataset, cfg: &Config, specs: &[SmartCluster]) -> Vec<(Model
 /// `--partitions smart --cluster_sweep`: the 30 hierarchical experiments (xlsx order), sharing
 /// per-deck training.
 pub fn process_smart_sweep(ds: &Dataset, cfg: &Config) -> Vec<(ModelOutput, f64)> {
+    let thr: &[f64] =
+        if cfg.cluster_distance == "kl" { &KL_SWEEP_THRESHOLDS } else { &SWEEP_THRESHOLDS };
     let specs: Vec<SmartCluster> = SWEEP_METHODS
         .iter()
-        .flat_map(|&(_, m)| SWEEP_THRESHOLDS.iter().map(move |&t| SmartCluster::Hier(m, t)))
+        .flat_map(|&(_, m)| thr.iter().map(move |&t| SmartCluster::Hier(m, t)))
         .collect();
     sweep_specs(ds, cfg, &specs)
 }
@@ -716,6 +922,389 @@ pub fn process_hdbscan_sweep(ds: &Dataset, cfg: &Config) -> Vec<(ModelOutput, f6
     sweep_specs(ds, cfg, &specs)
 }
 
+// ===================== Optimal-partition (objective-driven) smart presets =====================
+//
+// Instead of clustering decks by a distance, search the space of deck *partitions* directly for the
+// one minimizing an information criterion (AIC/BIC) on the TRAINING fold — no test peeking. Tiers by
+// the number of decks N: N≤6 exhaustive over all set partitions (memoized, 2^N−1 distinct subset
+// trainings cover them); 6<N≤12 greedy agglomerative merge on the objective; N>12 pre-merge the
+// closest decks (Mahalanobis or KL) into 12 pseudo-decks, then greedy. The coarsest partition (one
+// model over all decks) == the per-user global baseline and is always a candidate, so this directly
+// tests whether any honestly-selected partition beats global. AIC and BIC share every subset
+// training (only the penalty differs); a fallback cluster (too little data → reuses the global model
+// or INIT_W) does NOT add to the parameter count k.
+
+#[derive(Clone, Copy, PartialEq)]
+enum OptObj {
+    Aic,
+    Bic,
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum PreMerge {
+    Maha,
+    Kl,
+}
+
+/// A fitted cluster (memoized by its base-unit bitmask).
+struct SubsetFit {
+    params: Vec<f64>,
+    nll: f64,      // Σ clamped BCE over the cluster's training rows under `params`
+    n_rows: usize, // predicted training rows
+    trained: bool, // params estimated from this cluster's own data (false = fallback → no k cost)
+}
+
+/// Clamped BCE, matching `train.rs::bce` (each log term floored at −100, like torch's
+/// `binary_cross_entropy`).
+#[inline]
+fn opt_bce(p: f64, y: f64) -> f64 {
+    -(y * p.ln().max(-100.0) + (1.0 - y) * (1.0 - p).ln().max(-100.0))
+}
+
+/// Base units for one fold (≤12): per-unit training rows + the original-deck → unit map.
+struct OptBases {
+    unit_rows: Vec<Vec<Row>>,
+    deck_to_unit: std::collections::HashMap<i64, usize>,
+}
+
+/// Build the ≤12 base units for one fold: each deck if N≤12, else pre-merge the closest decks
+/// (Mahalanobis on whitened params, or KL on predictions) down to 12 pseudo-decks.
+fn build_opt_bases(
+    ds: &Dataset,
+    cfg: &Config,
+    tc: &TrainConfig,
+    cov: &crate::smart::Cov,
+    train: &[Row],
+    metric: PreMerge,
+) -> OptBases {
+    use std::collections::HashMap;
+    let mut deck_ids: Vec<i64> = train.iter().map(|r| r.partition).collect();
+    deck_ids.sort_unstable();
+    deck_ids.dedup();
+    let m = deck_ids.len();
+    let rows_of = |d: i64| -> Vec<Row> { train.iter().filter(|r| r.partition == d).cloned().collect() };
+
+    if m <= 12 {
+        let unit_rows = deck_ids.iter().map(|&d| rows_of(d)).collect();
+        let deck_to_unit = deck_ids.iter().enumerate().map(|(i, &d)| (d, i)).collect();
+        return OptBases { unit_rows, deck_to_unit };
+    }
+
+    // N>12: per-deck training for the pre-merge distance, then merge to 12 pseudo-decks.
+    let (dids, deck_w, _ul) = train_partition_weights(ds, train, cfg, tc);
+    let labels: Vec<usize> = match metric {
+        PreMerge::Maha => {
+            let points: Vec<Vec<f64>> = dids.iter().map(|d| cov.whiten(&deck_w[d])).collect();
+            crate::cluster::fcluster_k_points(&points, crate::cluster::Method::Average, 12)
+        }
+        PreMerge::Kl => {
+            let tm = Model::build(ds, train, &vec![1.0; train.len()], None, cfg);
+            let idx = kl_eval_indices(tm.rows.len(), KL_DIST_CAP);
+            let prep: Vec<(Vec<f64>, Vec<f64>)> =
+                dids.iter().map(|d| kl_prep(&tm.predict(&deck_w[d], &idx))).collect();
+            let nd = dids.len();
+            let mut dist = vec![vec![0.0f64; nd]; nd];
+            for i in 0..nd {
+                for j in (i + 1)..nd {
+                    let v = sym_kl(&prep[i].0, &prep[i].1, &prep[j].0, &prep[j].1);
+                    dist[i][j] = v;
+                    dist[j][i] = v;
+                }
+            }
+            crate::cluster::fcluster_k_matrix(&dist, crate::cluster::Method::Average, 12)
+        }
+    };
+    let k = labels.iter().copied().max().map(|x| x + 1).unwrap_or(0);
+    let mut unit_rows = vec![Vec::new(); k];
+    let mut deck_to_unit = HashMap::new();
+    for (i, &d) in dids.iter().enumerate() {
+        let u = labels[i];
+        deck_to_unit.insert(d, u);
+        unit_rows[u].extend(rows_of(d));
+    }
+    OptBases { unit_rows, deck_to_unit }
+}
+
+/// Fit (memoized) the cluster selected by `mask` over the base units' rows.
+fn fit_subset(
+    ds: &Dataset,
+    cfg: &Config,
+    tc: &TrainConfig,
+    unit_rows: &[Vec<Row>],
+    mask: u16,
+    global_w: Option<&[f64]>,
+    memo: &mut std::collections::HashMap<u16, SubsetFit>,
+) {
+    if memo.contains_key(&mask) {
+        return;
+    }
+    let mut rows: Vec<Row> = Vec::new();
+    for (i, ur) in unit_rows.iter().enumerate() {
+        if mask & (1 << i) != 0 {
+            rows.extend_from_slice(ur);
+        }
+    }
+    let (params, trained) = if cfg.default_params {
+        (INIT_W.to_vec(), false)
+    } else if adequate(&rows, cfg.max_seq_len) {
+        (train_weights(ds, &rows, cfg, tc), true)
+    } else {
+        (global_w.map(|g| g.to_vec()).unwrap_or_else(|| INIT_W.to_vec()), false)
+    };
+    let tm = Model::build(ds, &rows, &vec![1.0; rows.len()], None, cfg);
+    let all: Vec<usize> = (0..tm.rows.len()).collect();
+    let preds = tm.predict(&params, &all);
+    let nll: f64 = preds.iter().enumerate().map(|(i, &pr)| opt_bce(pr, tm.rows[i].y as f64)).sum();
+    memo.insert(mask, SubsetFit { params, nll, n_rows: tm.rows.len(), trained });
+}
+
+/// AIC/BIC of a partition (list of cluster masks) from cached fits. `n` = total training rows.
+/// Fallback clusters contribute their NLL but not to `k` (per Andrew: don't penalize fallback).
+fn partition_objective(
+    masks: &[u16],
+    memo: &std::collections::HashMap<u16, SubsetFit>,
+    obj: OptObj,
+    n: usize,
+) -> f64 {
+    let mut nll = 0.0;
+    let mut ntrained = 0usize;
+    for &m in masks {
+        let f = &memo[&m];
+        nll += f.nll;
+        if f.trained {
+            ntrained += 1;
+        }
+    }
+    let k = (ntrained * INIT_W.len()) as f64;
+    match obj {
+        OptObj::Aic => 2.0 * nll + 2.0 * k,
+        OptObj::Bic => 2.0 * nll + k * (n.max(1) as f64).ln(),
+    }
+}
+
+/// All set partitions of `m` units as lists of base-unit bitmasks (restricted-growth strings).
+fn set_partitions(m: usize) -> Vec<Vec<u16>> {
+    let mut out = Vec::new();
+    fn rec(i: usize, nb: usize, a: &mut [usize], m: usize, out: &mut Vec<Vec<u16>>) {
+        if i == m {
+            let mut masks = vec![0u16; nb];
+            for (u, &lab) in a.iter().enumerate() {
+                masks[lab] |= 1u16 << u;
+            }
+            out.push(masks);
+            return;
+        }
+        for lab in 0..nb {
+            a[i] = lab;
+            rec(i + 1, nb, a, m, out);
+        }
+        a[i] = nb;
+        rec(i + 1, nb + 1, a, m, out);
+    }
+    if m == 0 {
+        return vec![vec![]];
+    }
+    let mut a = vec![0usize; m];
+    rec(0, 0, &mut a, m, &mut out);
+    out
+}
+
+/// Exhaustive search over all set partitions (m≤6): returns (best-BIC masks, best-AIC masks).
+fn opt_exhaustive(
+    ds: &Dataset,
+    cfg: &Config,
+    tc: &TrainConfig,
+    unit_rows: &[Vec<Row>],
+    global_w: &[f64],
+    memo: &mut std::collections::HashMap<u16, SubsetFit>,
+    n: usize,
+) -> (Vec<u16>, Vec<u16>) {
+    let m = unit_rows.len();
+    for mask in 1u16..(1u16 << m) {
+        fit_subset(ds, cfg, tc, unit_rows, mask, Some(global_w), memo);
+    }
+    let (mut bb, mut ba) = ((f64::INFINITY, Vec::new()), (f64::INFINITY, Vec::new()));
+    for masks in set_partitions(m) {
+        let bic = partition_objective(&masks, memo, OptObj::Bic, n);
+        let aic = partition_objective(&masks, memo, OptObj::Aic, n);
+        if bic < bb.0 {
+            bb = (bic, masks.clone());
+        }
+        if aic < ba.0 {
+            ba = (aic, masks);
+        }
+    }
+    (bb.1, ba.1)
+}
+
+/// Greedy agglomerative search for one objective (6<m≤12): from singletons, repeatedly commit the
+/// merge that most lowers `obj`, walking to one cluster; return the best partition seen on the path.
+fn opt_greedy(
+    ds: &Dataset,
+    cfg: &Config,
+    tc: &TrainConfig,
+    unit_rows: &[Vec<Row>],
+    global_w: &[f64],
+    memo: &mut std::collections::HashMap<u16, SubsetFit>,
+    obj: OptObj,
+    n: usize,
+) -> Vec<u16> {
+    let m = unit_rows.len();
+    let mut clusters: Vec<u16> = (0..m).map(|i| 1u16 << i).collect();
+    for &c in &clusters {
+        fit_subset(ds, cfg, tc, unit_rows, c, Some(global_w), memo);
+    }
+    let mut best = clusters.clone();
+    let mut best_obj = partition_objective(&clusters, memo, obj, n);
+    while clusters.len() > 1 {
+        let (mut bi, mut bj, mut bmask, mut bval) = (0usize, 1usize, 0u16, f64::INFINITY);
+        for i in 0..clusters.len() {
+            for j in (i + 1)..clusters.len() {
+                let merged = clusters[i] | clusters[j];
+                fit_subset(ds, cfg, tc, unit_rows, merged, Some(global_w), memo);
+                let cand: Vec<u16> = clusters
+                    .iter()
+                    .enumerate()
+                    .filter(|(t, _)| *t != i && *t != j)
+                    .map(|(_, &c)| c)
+                    .chain(std::iter::once(merged))
+                    .collect();
+                let val = partition_objective(&cand, memo, obj, n);
+                if val < bval {
+                    bval = val;
+                    bi = i;
+                    bj = j;
+                    bmask = merged;
+                }
+            }
+        }
+        clusters = clusters
+            .iter()
+            .enumerate()
+            .filter(|(t, _)| *t != bi && *t != bj)
+            .map(|(_, &c)| c)
+            .chain(std::iter::once(bmask))
+            .collect();
+        if bval < best_obj {
+            best_obj = bval;
+            best = clusters.clone();
+        }
+    }
+    best
+}
+
+type OptOut = (Vec<Row>, Vec<f64>, Vec<(String, Vec<f64>)>);
+
+/// Predict one fold's `test` rows under a selected partition, appending to (eval_rows, p). A deck
+/// with no training rows that fold (test-only) is predicted with the global model.
+fn opt_predict(
+    ds: &Dataset,
+    cfg: &Config,
+    bases: &OptBases,
+    masks: &[u16],
+    memo: &std::collections::HashMap<u16, SubsetFit>,
+    global_w: &[f64],
+    test: &[Row],
+    eval_rows: &mut Vec<Row>,
+    p: &mut Vec<f64>,
+) {
+    use std::collections::HashMap;
+    let m = bases.unit_rows.len();
+    let mut unit_mask = vec![0u16; m];
+    for &mask in masks {
+        for (u, slot) in unit_mask.iter_mut().enumerate() {
+            if mask & (1 << u) != 0 {
+                *slot = mask;
+            }
+        }
+    }
+    let mut groups: HashMap<u16, Vec<Row>> = HashMap::new();
+    for r in test {
+        let key = match bases.deck_to_unit.get(&r.partition) {
+            Some(&u) => unit_mask[u],
+            None => 0u16, // test-only deck → global (real cluster masks are ≥1)
+        };
+        groups.entry(key).or_default().push(r.clone());
+    }
+    let mut keys: Vec<u16> = groups.keys().copied().collect();
+    keys.sort_unstable();
+    for key in keys {
+        let group = &groups[&key];
+        let w: &[f64] = if key == 0 { global_w } else { &memo[&key].params };
+        let tm = Model::build(ds, group, &vec![1.0; group.len()], None, cfg);
+        let all: Vec<usize> = (0..tm.rows.len()).collect();
+        for (i, pr) in tm.predict(w, &all).into_iter().enumerate() {
+            eval_rows.push(tm.rows[i].clone());
+            p.push(pr);
+        }
+    }
+}
+
+fn masks_to_params(
+    masks: &[u16],
+    memo: &std::collections::HashMap<u16, SubsetFit>,
+) -> Vec<(String, Vec<f64>)> {
+    masks.iter().enumerate().map(|(i, m)| (i.to_string(), memo[m].params.clone())).collect()
+}
+
+/// Run the optimal-partition search for one pre-merge metric across all folds → (BIC out, AIC out).
+fn optimal_one_metric(ds: &Dataset, cfg: &Config, tc: &TrainConfig, metric: PreMerge) -> (OptOut, OptOut) {
+    let rows = &ds.rows;
+    let splits = time_series_split(rows.len(), cfg.n_splits);
+    let cov = crate::smart::global();
+    let (mut erb, mut pb, mut era, mut pa) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+    let (mut lb, mut la): (Vec<(String, Vec<f64>)>, Vec<(String, Vec<f64>)>) = (Vec::new(), Vec::new());
+    for s in splits {
+        let train = &rows[..s.test_start];
+        let test = &rows[s.test_start..s.test_end];
+        let bases = build_opt_bases(ds, cfg, tc, cov, train, metric);
+        let m = bases.unit_rows.len();
+        if m == 0 {
+            continue;
+        }
+        let full: u16 = ((1u32 << m) - 1) as u16;
+        let mut memo: std::collections::HashMap<u16, SubsetFit> = std::collections::HashMap::new();
+        fit_subset(ds, cfg, tc, &bases.unit_rows, full, None, &mut memo);
+        let global_w = memo[&full].params.clone();
+        let n = memo[&full].n_rows;
+        let (bic_masks, aic_masks) = if m <= 6 {
+            opt_exhaustive(ds, cfg, tc, &bases.unit_rows, &global_w, &mut memo, n)
+        } else {
+            let b = opt_greedy(ds, cfg, tc, &bases.unit_rows, &global_w, &mut memo, OptObj::Bic, n);
+            let a = opt_greedy(ds, cfg, tc, &bases.unit_rows, &global_w, &mut memo, OptObj::Aic, n);
+            (b, a)
+        };
+        opt_predict(ds, cfg, &bases, &bic_masks, &memo, &global_w, test, &mut erb, &mut pb);
+        opt_predict(ds, cfg, &bases, &aic_masks, &memo, &global_w, test, &mut era, &mut pa);
+        lb = masks_to_params(&bic_masks, &memo);
+        la = masks_to_params(&aic_masks, &memo);
+    }
+    ((erb, pb, lb), (era, pa, la))
+}
+
+/// `--cluster_method optimal --cluster_sweep`: the 4 optimal-partition configs in suffix order
+/// (opt-bic-maha, opt-aic-maha, opt-bic-kl, opt-aic-kl). For N≤12 decks the Maha/KL pre-merge never
+/// triggers, so those results are identical and computed once.
+pub fn process_optimal_sweep(ds: &Dataset, cfg: &Config) -> Vec<(ModelOutput, f64)> {
+    use std::time::Instant;
+    let tc = train_config();
+    let mut decks: Vec<i64> = ds.rows.iter().map(|r| r.partition).collect();
+    decks.sort_unstable();
+    decks.dedup();
+    let both = decks.len() > 12;
+    let t0 = Instant::now();
+    let (bm, am) = optimal_one_metric(ds, cfg, &tc, PreMerge::Maha);
+    let (bk, ak) = if both { optimal_one_metric(ds, cfg, &tc, PreMerge::Kl) } else { (bm.clone(), am.clone()) };
+    let t = t0.elapsed().as_secs_f64() / 4.0;
+    let mk = |o: OptOut| ModelOutput { eval_rows: o.0, p: o.1, params: Params::Partitioned(o.2) };
+    vec![(mk(bm), t), (mk(am), t), (mk(bk), t), (mk(ak), t)]
+}
+
+/// Filename suffixes for the optimal-partition sweep, in `process_optimal_sweep` output order.
+pub fn opt_sweep_suffixes() -> Vec<String> {
+    vec!["opt-bic-maha".into(), "opt-aic-maha".into(), "opt-bic-kl".into(), "opt-aic-kl".into()]
+}
+
 #[inline]
 fn sq_dist(a: &[f64], b: &[f64]) -> f64 {
     a.iter().zip(b).map(|(x, y)| (x - y) * (x - y)).sum()
@@ -724,6 +1313,42 @@ fn sq_dist(a: &[f64], b: &[f64]) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sym_kl_matches_reference() {
+        // The logit closed-form sym_kl must equal the ln-in-loop reference, incl. at clamp extremes.
+        let a = [0.9, 0.5, 0.99, 0.2, 0.7, 0.999999, 0.000001, 0.43];
+        let b = [0.8, 0.55, 0.6, 0.25, 0.7, 0.5, 0.5, 0.43];
+        let (pa, la) = kl_prep(&a);
+        let (pb, lb) = kl_prep(&b);
+        let got = sym_kl(&pa, &la, &pb, &lb);
+        let want = mean_sym_kl(&a, &b);
+        assert!((got - want).abs() < 1e-12, "sym_kl {got} vs reference {want}");
+        assert_eq!(sym_kl(&pa, &la, &pa, &la), 0.0, "identical vectors → 0");
+    }
+
+    #[test]
+    fn set_partitions_counts_bell() {
+        // Number of set partitions of an m-set = Bell(m).
+        let bell = [1usize, 1, 2, 5, 15, 52, 203];
+        for (m, &b) in bell.iter().enumerate() {
+            assert_eq!(set_partitions(m).len(), b, "Bell({m})");
+        }
+        // Every partition must cover all m units exactly once (disjoint masks, union = full).
+        for m in 1..=6 {
+            let full = (1u16 << m) - 1;
+            for masks in set_partitions(m) {
+                let mut seen = 0u16;
+                for &mm in &masks {
+                    assert_eq!(seen & mm, 0, "overlapping clusters at m={m}");
+                    seen |= mm;
+                    assert_ne!(mm, 0, "empty cluster at m={m}");
+                }
+                assert_eq!(seen, full, "partition does not cover all units at m={m}");
+            }
+        }
+    }
+
     // Finite-difference (h=1e-6) needs f64; in the default f32 build the difference is dominated
     // by rounding noise, so this math check runs under the `fp64` feature only.
     #[cfg(feature = "fp64")]

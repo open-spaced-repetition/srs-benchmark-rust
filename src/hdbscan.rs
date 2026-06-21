@@ -20,9 +20,6 @@ pub fn hdbscan(points: &[Vec<f64>], min_cluster_size: usize, min_samples: usize,
     if n == 1 {
         return vec![-1]; // single point: noise (noise→nearest later makes it its own cluster)
     }
-    let mcs = min_cluster_size.clamp(2, n);
-    let ms = min_samples.clamp(1, n);
-
     // Pairwise Euclidean distances.
     let mut d = vec![vec![0.0f64; n]; n];
     for i in 0..n {
@@ -37,6 +34,32 @@ pub fn hdbscan(points: &[Vec<f64>], min_cluster_size: usize, min_samples: usize,
             d[j][i] = dist;
         }
     }
+    hdbscan_from_dist(d, min_cluster_size, min_samples, leaf)
+}
+
+/// HDBSCAN* labels for a **precomputed** full `n×n` symmetric distance matrix (sklearn
+/// `metric="precomputed"`) — used by the KL-divergence smart-preset path.
+pub fn hdbscan_precomputed(
+    dist: &[Vec<f64>],
+    min_cluster_size: usize,
+    min_samples: usize,
+    leaf: bool,
+) -> Vec<i64> {
+    let n = dist.len();
+    if n == 0 {
+        return Vec::new();
+    }
+    if n == 1 {
+        return vec![-1];
+    }
+    hdbscan_from_dist(dist.to_vec(), min_cluster_size, min_samples, leaf)
+}
+
+/// Core HDBSCAN* on a full pairwise distance matrix `d` (`n = d.len()` ≥ 2).
+fn hdbscan_from_dist(d: Vec<Vec<f64>>, min_cluster_size: usize, min_samples: usize, leaf: bool) -> Vec<i64> {
+    let n = d.len();
+    let mcs = min_cluster_size.clamp(2, n);
+    let ms = min_samples.clamp(1, n);
 
     // Core distance = the `ms`-th smallest distance in each row INCLUDING self (index ms-1).
     let core: Vec<f64> = (0..n)
@@ -427,6 +450,54 @@ pub fn noise_to_nearest(points: &[Vec<f64>], labels: &[i64]) -> Vec<usize> {
     canonicalize(&assigned)
 }
 
+/// noise→nearest for a **precomputed** distance matrix (the KL path): reassign each noise point to
+/// the non-noise cluster minimizing the MEAN distance to that cluster's members — the centroid analog
+/// when only pairwise distances exist. All-noise ⇒ singletons. Returns 0-based contiguous labels.
+pub fn noise_to_nearest_dist(dist: &[Vec<f64>], labels: &[i64]) -> Vec<usize> {
+    let n = labels.len();
+    if !labels.iter().any(|&l| l == -1) {
+        return canonicalize(labels);
+    }
+    let non_noise: Vec<i64> = {
+        let mut v: Vec<i64> = labels.iter().copied().filter(|&l| l != -1).collect();
+        v.sort_unstable();
+        v.dedup();
+        v
+    };
+    if non_noise.is_empty() {
+        return (0..n).collect();
+    }
+    let mean_to = |i: usize, cluster: i64| -> f64 {
+        let mut sum = 0.0;
+        let mut cnt = 0usize;
+        for (j, &l) in labels.iter().enumerate() {
+            if l == cluster {
+                sum += dist[i][j];
+                cnt += 1;
+            }
+        }
+        if cnt > 0 {
+            sum / cnt as f64
+        } else {
+            f64::INFINITY
+        }
+    };
+    let assigned: Vec<i64> = labels
+        .iter()
+        .enumerate()
+        .map(|(i, &l)| {
+            if l != -1 {
+                return l;
+            }
+            *non_noise
+                .iter()
+                .min_by(|&&a, &&b| mean_to(i, a).total_cmp(&mean_to(i, b)))
+                .unwrap()
+        })
+        .collect();
+    canonicalize(&assigned)
+}
+
 #[inline]
 fn sq(a: &[f64], b: &[f64]) -> f64 {
     a.iter().zip(b).map(|(x, y)| (x - y) * (x - y)).sum()
@@ -511,5 +582,40 @@ mod tests {
         // points — a valid alternative tie-break, not a bug. Allow at most one such case, small.
         assert!(mismatched <= 1, "{mismatched} cases differ from sklearn (expected ≤1 tie case)");
         assert!(max_ndiff <= 5, "tie-difference too large ({max_ndiff} pts) — likely a real bug");
+    }
+
+    #[test]
+    fn precomputed_matches_points() {
+        // hdbscan_precomputed on the Euclidean distance matrix must equal hdbscan on the points.
+        let fixture: Value =
+            serde_json::from_str(include_str!("../_smart/hdbscan_testcases.json")).unwrap();
+        for entry in fixture.as_array().unwrap() {
+            let points: Vec<Vec<f64>> = entry["points"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|row| row.as_array().unwrap().iter().map(|v| v.as_f64().unwrap()).collect())
+                .collect();
+            let n = points.len();
+            let mut d = vec![vec![0.0f64; n]; n];
+            for i in 0..n {
+                for j in (i + 1)..n {
+                    let s: f64 =
+                        points[i].iter().zip(&points[j]).map(|(a, b)| (a - b) * (a - b)).sum();
+                    d[i][j] = s.sqrt();
+                    d[j][i] = s.sqrt();
+                }
+            }
+            for case in entry["cases"].as_array().unwrap() {
+                let mcs = case["mcs"].as_u64().unwrap() as usize;
+                let ms = case["ms"].as_u64().unwrap() as usize;
+                let leaf = case["leaf"].as_bool().unwrap();
+                assert_eq!(
+                    hdbscan(&points, mcs, ms, leaf),
+                    hdbscan_precomputed(&d, mcs, ms, leaf),
+                    "mcs={mcs} ms={ms} leaf={leaf}"
+                );
+            }
+        }
     }
 }

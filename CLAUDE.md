@@ -124,9 +124,20 @@ predict (test-only deck → nearest cluster to the user's global params). Eval r
 - Clustering: `src/cluster.rs` hierarchical linkage (kodama) + SciPy-exact `fcluster(distance)`;
   `src/hdbscan.rs` sklearn-matching HDBSCAN (eps inert; sweep varies mcs/ms/eom-leaf). Both unit-tested.
 - `--cluster_sweep` runs the whole matrix sharing per-deck training (hierarchical 30; HDBSCAN 16 via
-  `--cluster_method hdbscan`). Tooling + stripped result archive + xlsx filler in `_smart/`.
-- **Finding (1000 users): smart presets do NOT beat the per-user global model** — every config ≥
-  baseline; they only approach it as clusters collapse toward one.
+  `--cluster_method hdbscan`). Tooling + stripped result archive (`_smart/results/`) + xlsx appender
+  (`_smart/append_smart_xlsx.py`) in `_smart/`.
+- **`--cluster_distance kl`**: cluster by similarity of deck *predictions* (mean symmetric Bernoulli
+  KL) instead of params. Closed form `½·(pₐ−p_b)·(logit pₐ−logit_b)` + a 256-row strided subsample
+  (`KL_DIST_CAP`) — the raw O(decks²·rows) matrix is intractable (users have up to ~4947 decks; see
+  [[anki-revlogs-deck-counts-kl-cost]]). Thresholds calibrated via `_smart/kl_calibrate.py`.
+- **`--cluster_method optimal --cluster_sweep`**: skip distance clustering; search partitions for the
+  min AIC/BIC on the *training* fold (no test peek). Tiers: exhaustive (≤6 decks, memoized 2^N−1
+  subsets), greedy agglomerative (7–12), Maha/KL pre-merge→12 then greedy (>12). 4 files
+  (`-smart-opt-{bic,aic}-{maha,kl}`); fallback clusters don't count toward the param penalty `k`.
+- **Finding (1000 users): NOTHING beats the per-user global model** — across Mahalanobis + KL
+  distances, hierarchical + HDBSCAN, and the honest AIC/BIC optimal partition, every config's mean
+  LogLoss is ≥ baseline (best −0.00003 = f32 noise). The 10-user optimal signal did not hold. Pooling
+  all of a user's decks into one model wins. See `Smart Preset Assignment.xlsx`.
 - **Shared partition fixes** (deck/preset too): missing-`cards` card → partition −1 (Python
   `fillna(-1)`); card-less user → all −1; inadequate-partition double-fallback (→ user-level → INIT_W).
 

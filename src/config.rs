@@ -47,6 +47,12 @@ pub struct Cli {
     #[arg(long = "cluster_sweep", default_value_t = false)]
     pub cluster_sweep: bool,
 
+    /// Smart-preset distance metric: `mahalanobis` (whitened FSRS-7 params) or `kl` (symmetric KL
+    /// divergence between the decks' recall predictions on the user's own rows). Only used with
+    /// `--partitions smart`; `kl` files get a `-smart-kl-…` name so they sit beside the mahalanobis ones.
+    #[arg(long = "cluster_distance", default_value = "mahalanobis", value_parser = ["mahalanobis", "kl"])]
+    pub cluster_distance: String,
+
     /// Enable recency weighting during training.
     #[arg(long, default_value_t = false)]
     pub recency: bool,
@@ -156,6 +162,7 @@ pub struct Config {
     pub cluster_method: String,
     pub cluster_threshold: f64,
     pub cluster_sweep: bool,
+    pub cluster_distance: String,
     pub dev_mode: bool,
 
     pub max_user_id: Option<i64>,
@@ -234,7 +241,13 @@ impl Config {
             // Each (method, threshold) experiment writes a distinct file so they don't collide.
             // In sweep mode the base has NO suffix; the sweep runner appends one per experiment.
             if !cli.cluster_sweep {
-                parts.push(format!("-smart-{}-{}", cli.cluster_method, fmt_threshold(cli.cluster_threshold)));
+                let dprefix = if cli.cluster_distance == "kl" { "kl-" } else { "" };
+                parts.push(format!(
+                    "-smart-{}{}-{}",
+                    dprefix,
+                    cli.cluster_method,
+                    fmt_threshold(cli.cluster_threshold)
+                ));
             }
         } else if cli.partitions != "none" {
             parts.push(format!("-{}", cli.partitions));
@@ -274,6 +287,7 @@ impl Config {
             cluster_method: cli.cluster_method.clone(),
             cluster_threshold: cli.cluster_threshold,
             cluster_sweep: cli.cluster_sweep,
+            cluster_distance: cli.cluster_distance.clone(),
             dev_mode: cli.dev,
             max_user_id: cli.max_user_id,
             num_processes: cli.processes,
