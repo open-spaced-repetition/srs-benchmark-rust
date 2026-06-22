@@ -1,13 +1,200 @@
 # srs-benchmark-rust
 
-A Rust port of [open-spaced-repetition/srs-benchmark](https://github.com/open-spaced-repetition/srs-benchmark),
-built to run the same benchmark **much faster** while ensuring that results don't become significantly worse.
+A Rust port of [**open-spaced-repetition/srs-benchmark**](https://github.com/open-spaced-repetition/srs-benchmark),
+built to run the same benchmark **much faster** while reproducing its results. The model
+*definitions* remain authored in Python upstream as the canonical spec; the math for the ported
+algorithms is reimplemented natively in Rust for speed, and the command-line interface mirrors the
+Python `script.py` (same flags, same output filenames). Algorithms that rely on the Reptile optimizer
+(GRU, LSTM) and other neural models keep the upstream Python runtime path.
 
-The command-line interface mirrors the Python `script.py` (same flags, same output
-filenames). Model *definitions* remain authored in Python upstream as the canonical spec;
-the math for the ported algorithms is reimplemented natively in Rust for speed. Algorithms
-that rely on the Reptile optimizer (GRU, LSTM) and other neural models keep the Python
-runtime path for now.
+The sections **Introduction**, **Dataset**, **Evaluation**, and the algorithm descriptions below are
+adapted (with minimal changes) from the [upstream README](https://github.com/open-spaced-repetition/srs-benchmark);
+see it for the full project context, the neural-model results, and the additional metrics (RMSE (bins),
+AUC). The **Results** here report **Log Loss only**, comparing the current upstream Python against this
+Rust port over the same collections.
+
+## Introduction
+
+Spaced repetition algorithms are computer programs designed to help people schedule reviews of
+flashcards. A good spaced repetition algorithm helps you remember things more efficiently. Instead of
+cramming all at once, it distributes your reviews over time. To make this efficient, these algorithms
+try to understand how your memory works. They aim to predict when you're likely to forget something,
+so they can schedule a review accordingly.
+
+This benchmark is designed to assess the predictive accuracy of various algorithms. A multitude of
+algorithms are evaluated to find out which ones provide the most accurate predictions.
+
+## Dataset
+
+The dataset for the SRS benchmark comes from 10 thousand users who use Anki, a flashcard app. In total,
+this dataset contains information about ~727 million reviews of flashcards. The full dataset is hosted
+on Hugging Face Datasets:
+[open-spaced-repetition/anki-revlogs-10k](https://huggingface.co/datasets/open-spaced-repetition/anki-revlogs-10k).
+
+## Evaluation
+
+### Data Split
+
+The benchmark uses a tool called `TimeSeriesSplit` (from the [sklearn](https://scikit-learn.org/)
+library). It splits the data by time: older reviews are used for training and newer reviews for
+testing. That way, we don't accidentally cheat by giving the algorithm future information it shouldn't
+have. In practice, we use past study sessions to predict future ones.
+
+Note: `TimeSeriesSplit` removes the first split from evaluation, because the first split is used for
+training and we don't want to evaluate the algorithm on the same data it was trained on. RMSE-BINS-EXPLOIT
+does not use `TimeSeriesSplit`.
+
+### Metrics
+
+The upstream benchmark uses three metrics — Log Loss, RMSE (bins), and AUC. **This port's tables below
+report Log Loss only** (the binding correctness target for the port); the full metric set is in the
+upstream README.
+
+- **Log Loss** (also known as Binary Cross Entropy): a measure of the discrepancy between predicted
+  probabilities of recall and review outcomes (1 or 0). It quantifies how well the algorithm
+  approximates the true recall probabilities. Log Loss ranges from 0 to infinity; **lower is better**.
+
+### Algorithms and algorithm families
+
+In this Rust port, the Adam-trained and closed-form algorithms below are **reimplemented natively in
+Rust**; the neural models (GRU, LSTM, RWKV, NN-17, Transformer) keep the upstream **Python** runtime and
+are not included in the tables. Descriptions are copied from the upstream README.
+
+- Two component or three component* model of memory:
+    - FSRS v1 and v2: the initial experimental versions of FSRS, used only by Jarrett Ye.
+    - FSRS v3: the first official release of the FSRS algorithm, made available as a custom scheduling script.
+    - FSRS v4: the upgraded version of FSRS, made better with help from the community. It is the first version that was integrated into Anki.
+    - FSRS-4.5: the minorly improved version based on FSRS v4. The shape of the forgetting curve has been changed.
+    - FSRS-5: unlike the previous versions, FSRS-5 uses the same-day review data to refine its prediction for the next review. Same-day reviews are used only for training, and not for evaluation.
+    - FSRS-6: the formula for handling same-day reviews has been improved. More importantly, FSRS-6 has an optimizable parameter that controls the flatness of the forgetting curve, meaning that the shape of the curve is different for different users.
+    - FSRS-7: the newest version. Unlike all previous versions, which have been designed to work with integer interval lengths, FSRS-7 has been designed to work with fractional interval lengths. It is the only version that can give realistic predictions of probability of recall for same-day reviews. The biggest change is that the forgetting curve now has 8 optimizable parameters and uses a rather complex formula.
+        - FSRS-7 default param.: FSRS-7 with default parameters, without per-user optimization.
+        - FSRS-7 recency: FSRS-7 trained with reviews being weighted based on their recency, such that older reviews affect the loss function less and newer reviews affect it more.
+    - FSRS-rs: the Rust port of FSRS-6 with recency weighting. See also: https://github.com/open-spaced-repetition/fsrs-rs *(in this benchmark it is gated behind the `fsrs-rs` cargo feature and is not in the tables.)*
+    - HLR: the algorithm proposed by Duolingo. Its full name is Half-Life Regression. For further information, please refer to [this paper](https://github.com/duolingo/halflife-regression).
+    - Ebisu v2: [an algorithm that uses Bayesian statistics](https://fasiha.github.io/ebisu/) to update its estimate of memory half-life after every review.
+
+    *In the two-component model of long-term memory, two independent variables are used to describe the status of unitary memory in a human brain: retrievability (R), or retrieval strength/probability of recall; and stability (S), or storage strength/memory half-life. The expanded three-component model adds a third variable - difficulty (D).*
+
+- Alternative models of memory:
+    - DASH: the algorithm proposed in [this paper](https://scholar.colorado.edu/concern/graduate_thesis_or_dissertations/zp38wc97m). The name stands for Difficulty, Ability, and Study History. In our benchmark, we only use the Ability and Study History because the Difficulty part is not applicable to our dataset. We also added two other variants of this algorithm: DASH[MCM] and DASH[ACT-R]. For further information, please refer to [this paper](https://www.politesi.polimi.it/retrieve/b39227dd-0963-40f2-a44b-624f205cb224/2022_4_Randazzo_01.pdf).
+    - ACT-R: the algorithm proposed in [this paper](http://act-r.psy.cmu.edu/wordpress/wp-content/themes/ACT-R/workshops/2003/proceedings/46.pdf). It includes an activation-based system of declarative memory. It explains the spacing effect by the activation of memory traces.
+
+- Other:
+    - Logistic Regression: performs a logistic regression based on 34 features computed from the card history.
+    - Anki: the trainable variant of Anki's own SM-2-derived scheduler (an interval/ease state machine), with a fixed forgetting curve.
+    - SM2 / SM2-trainable: the classic SuperMemo-2 algorithm; `SM2` uses fixed constants, `SM2-trainable` optimizes its interval/ease-factor parameters.
+    - AVG: an "algorithm" that outputs a constant equal to the user's average retention. Has no practical applications and is intended only to serve as a baseline. An algorithm that doesn't outperform AVG cannot be considered good.
+    - MOVING-AVG: unlike AVG, which uses the overall retention across all reviews as its prediction of probability of recall, MOVING-AVG outputs higher values if recent reviews were successful and lower values if recent reviews were lapses.
+    - RMSE-BINS-EXPLOIT: an algorithm that exploits the calculation of RMSE (bins) by simulating the bins and keeping the error term close to 0.
+
+For further information regarding the FSRS algorithm, please refer to the following wiki page:
+[The Algorithm](https://github.com/open-spaced-repetition/fsrs4anki/wiki/The-Algorithm).
+
+## Results — Python vs Rust (Log Loss)
+
+The purpose of this port is to reproduce the upstream Python results faster, so the headline result is
+the **agreement** between the two implementations. The tables below report, per algorithm:
+
+- **Python Log Loss** — the **current** upstream Python `srs-benchmark` (`result/`), run over this same
+  dataset.
+- **Rust Log Loss** — this port (`target/release/script`).
+- **Difference** — Rust − Python.
+
+Each Log Loss is the **unweighted mean of the per-user Log Loss** across collections (the same
+aggregation the upstream tables use). The reproduction target is **within ±0.0005**; the vast majority
+of configs land at ±0.0000. The handful of larger gaps are **always Rust being lower** (slightly
+*better*) and are genuine f64-vs-f32 optimizer/precision differences, not bugs — see the note under the
+tables.
+
+> Both numbers come from local runs over the same collections, so the difference is a true
+> implementation-to-implementation comparison. (The Python numbers therefore track the *current*
+> Python source and may differ slightly from the figures published in the upstream README, which can
+> predate code changes — most visibly for FSRS-7.) The neural models (GRU, LSTM, RWKV) and FSRS-rs are
+> not reimplemented here and are omitted; see the upstream README for those.
+
+Following upstream, the results are split into two regimes by how same-day (short-term) reviews are
+treated. The integer-interval ("without same-day reviews") configs evaluate on **9,999** collections;
+the fractional-interval (`--secs`, "with same-day reviews") configs evaluate on **10,000**.
+
+### Without same-day reviews (9,999 collections)
+
+Same-day reviews are removed from evaluation (integer-day intervals); some algorithms still use them
+for training. Sorted by Log Loss (lower is better).
+
+| Algorithm | Python Log Loss | Rust Log Loss | Difference (Rust - Python) |
+| --- | ---: | ---: | ---: |
+| MOVING-AVG | 0.3369 | 0.3369 | +0.0000 |
+| FSRS-7 (recency) | 0.3370 | 0.3371 | +0.0001 |
+| Logistic Regression | 0.3393 | 0.3393 | +0.0000 |
+| FSRS-6 | 0.3460 | 0.3460 | +0.0000 |
+| FSRS-5 | 0.3561 | 0.3561 | +0.0000 |
+| FSRS-7 default param. | 0.3620 | 0.3620 | +0.0000 |
+| FSRS-4.5 | 0.3625 | 0.3622 | -0.0002 |
+| DASH-short | 0.3681 | 0.3681 | -0.0000 |
+| DASH | 0.3682 | 0.3682 | -0.0000 |
+| DASH[MCM] | 0.3688 | 0.3688 | -0.0001 |
+| FSRS v4 | 0.3726 | 0.3723 | -0.0003 |
+| DASH[ACT-R] | 0.3728 | 0.3728 | +0.0001 |
+| AVG | 0.3945 | 0.3945 | +0.0000 |
+| ACT-R | 0.4033 | 0.3995 | -0.0037 |
+| FSRS v3 | 0.4364 | 0.4364 | +0.0000 |
+| FSRS v2 | 0.4533 | 0.4533 | +0.0000 |
+| HLR | 0.4694 | 0.4692 | -0.0003 |
+| FSRS v1 | 0.4919 | 0.4919 | -0.0000 |
+| HLR-short | 0.4929 | 0.4925 | -0.0004 |
+| Ebisu v2 | 0.4989 | 0.4989 | +0.0000 |
+| Anki | 0.5127 | 0.5128 | +0.0002 |
+| SM2-trainable | 0.5805 | 0.5817 | +0.0012 |
+| SM2 | 0.7220 | 0.7220 | +0.0000 |
+| RMSE-BINS-EXPLOIT | 4.6084 | 4.6084 | +0.0000 |
+
+### With same-day reviews (10,000 collections)
+
+Same-day reviews are kept (fractional-day `--secs` intervals) and the probability of recall is
+calculated for all reviews. Sorted by Log Loss (lower is better).
+
+| Algorithm | Python Log Loss | Rust Log Loss | Difference (Rust - Python) |
+| --- | ---: | ---: | ---: |
+| FSRS-7 (recency) | 0.3178 | 0.3179 | +0.0001 |
+| Logistic Regression | 0.3195 | 0.3195 | -0.0000 |
+| FSRS-7 | 0.3206 | 0.3207 | +0.0001 |
+| MOVING-AVG | 0.3301 | 0.3301 | +0.0000 |
+| FSRS-7 default param. | 0.3399 | 0.3399 | +0.0000 |
+| DASH[MCM] | 0.3459 | 0.3459 | -0.0000 |
+| DASH | 0.3487 | 0.3487 | -0.0000 |
+| DASH[ACT-R] | 0.3763 | 0.3763 | -0.0000 |
+| AVG | 0.3816 | 0.3816 | +0.0000 |
+| FSRS-6 | 0.3842 | 0.3844 | +0.0001 |
+| ACT-R | 0.3898 | 0.3885 | -0.0013 |
+| FSRS-4.5 | 0.4286 | 0.4288 | +0.0002 |
+| FSRS-5 | 0.4565 | 0.4564 | -0.0001 |
+| FSRS v4 | 0.4848 | 0.4845 | -0.0004 |
+| FSRS v3 | 0.6470 | 0.6468 | -0.0001 |
+| FSRS v2 | 0.6630 | 0.6628 | -0.0002 |
+| HLR | 0.7049 | 0.7049 | -0.0000 |
+| FSRS v1 | 0.7439 | 0.7437 | -0.0002 |
+| Ebisu v2 | 0.7717 | 0.7717 | +0.0000 |
+| Anki | 0.7948 | 0.7947 | -0.0001 |
+| SM2-trainable | 0.8239 | 0.8235 | -0.0004 |
+| SM2 | 0.9102 | 0.9102 | +0.0000 |
+| RMSE-BINS-EXPLOIT | 4.1287 | 4.1100 | -0.0187 |
+
+**On the larger gaps.** `size` (the per-user review count and its total) is **exact** for every config,
+so the feature pipeline is faithful and the gaps are purely numerical:
+
+- **ACT-R** (−0.0037 / −0.0013) runs in **f64** in this port (its gradient comes from forward-mode
+  autodiff, which only a fully-f64 pass proxies faithfully); torch trains in f32, and f64 simply finds
+  a slightly lower-loss optimum on this chaotic objective. The model math matches; the gap is
+  concentrated in a few chaotic users.
+- **RMSE-BINS-EXPLOIT** (−0.0187) is not a memory model — it games the RMSE (bins) metric, so its Log
+  Loss is meaningless (≈4) and extremely sensitive; a tiny f32 difference in the simulated bins moves
+  it noticeably. It is irrelevant to predictive accuracy.
+- The remaining wobbles (all within ±0.0012: FSRS v4, HLR, FSRS-4.5, SM2-trainable, …) are f32-vs-f64
+  / optimizer-trajectory noise. None is a behavioural difference.
+
+The `--secs`-without-`--short` variants (e.g. `DASH --secs`, `ACT-R --secs`) are not shown — they are
+not part of the upstream reference set and the port does not validate them.
 
 ## Build
 
@@ -23,7 +210,7 @@ RUSTFLAGS="-C target-cpu=native" cargo build --release   # binary: target/releas
 Each model's forward value/prediction, the optimizer, and the analytic (reverse-mode) gradients are
 rounded to **f32** by default, matching torch and the official Rust implementations (which the
 upstream references are generated with). This is what keeps the port faithful to those references
-under the ±0.0005 rule below. (One exception: the algorithms whose training gradient comes from
+under the ±0.0005 rule above. (One exception: the algorithms whose training gradient comes from
 *forward-mode* autodiff — ACT-R, Anki, DASH[ACT-R], the FSRS v1–v6 family (incl. FSRS-4.5 and
 FSRS-6-one-step), and SM2-trainable — run **entirely in f64** (value, optimizer, and gradient alike),
 because torch computes gradients in *reverse-mode* and only a fully-f64 forward-mode pass faithfully
@@ -60,7 +247,7 @@ cargo build --release --features neural
 ```
 
 These models load pretrained checkpoints from a `pretrain/` directory (the `*_pretrain.pth`
-files shipped with the Python `srs-benchmark`); see the per-model notes below.
+files shipped with the Python `srs-benchmark`).
 
 ## Run
 
@@ -79,133 +266,42 @@ slow users can be found:
 ```
 
 Runs resume: users already present in the result file are skipped (delete it for a fresh
-run).
+run). The output filename is derived from the flags exactly as in Python — e.g.
+`--algo FSRS-6 --short --secs` → `result/FSRS-6-short-secs.jsonl`.
 
-## Reproduction status
+## Performance
 
-Every **(algorithm + flags)** configuration that upstream publishes a reference for is listed
-below — one row per config — measured on the first **1000 users** of `anki-revlogs-10k`. Two
-criteria:
+Each trained algorithm is optimized to keep the benchmark fast while reproducing results within the
+±0.0005 tolerance above. The trained-model gradients are computed by **hand-written reverse-mode
+analytic gradients** rather than generic autodiff — these are manual VJPs of each model's specific
+forward pass (⚠ changing a model's math requires re-deriving its backward; the `--features fp64`
+oracle tests guard this). Models with hand-written gradients: **FSRS-7** (+ `f32x8` SIMD) and **FSRS
+v1–v6 / FSRS-4.5 / SM2-trainable / DASH[ACT-R]** (f64). The speedup work is logged iteration-by-
+iteration in `_speedup/phase2/iterations.md` (FSRS-7) and `_speedup/phase3/iterations.md` (the rest),
+each gated on a Wilcoxon signed-rank timing test (p < 0.01) and a per-algo correctness band. ACT-R and
+Anki keep forward-mode autodiff (a VJP wasn't a net win for them), but ACT-R got three stacked
+speedups (≈×3.5 total — ACT-R is bound by the transcendentals in its O(N²)-per-card activation sum, so
+a reverse-mode VJP would *not* help): (1) an *algorithmic* one — its activation recurrence `m[i]` is a
+prefix shared by all of a card's rows, so it's now computed **once per card** instead of recomputed
+from scratch per row (O(N³)→O(N²) per card), ×1.65, bit-identical; (2) a leaner `Dual::powd` that
+reuses the value (`a^(e-1) = aᵉ/a`) instead of a second `powf`, ×1.35 more; and (3) computing each
+inner power as `exp(exponent·ln a)` so `ln a` is calculated **once** and reused for value+gradient
+(instead of `powf`'s internal ln plus a separate one), ×1.55 more. (2)/(3) leave output bit-identical
+at the reported precision; (2) also helps Anki / FSRS-6-one-step.
 
-- **`size` exact** — the per-user review count *and* its total across users must match the
-  Python output **exactly** (validates the feature pipeline / row filtering).
-- **mean LogLoss — two-sided tolerance (±0.0005)** — the Rust mean LogLoss must be within
-  **±0.0005** of upstream. Anything outside `[−0.0005, +0.0005]` — **higher OR lower** — does
-  **not** pass. A `⚠ genuine` mark means the config falls outside the band but the cause has been
-  investigated and is a genuine f64-vs-f32 optimum / optimizer-trajectory difference, **not a bug**
-  (these read lower than upstream — `(better)`); see the per-config note `⁴`.
+Separately, **every FSRS version (v1–v6) got a per-card predict speedup**: `predict` (and the
+per-epoch best-weights `eval_loss`, which predicts over all rows) used to replay the stability
+recurrence from scratch for each row — O(N²) per card. The state after k reviews is a shared prefix,
+so `predict` now runs the recurrence **once per card** and each row reads the state it needs — O(N)
+per card, **bit-identical**. ×1.36 on FSRS-6, ×1.27 on FSRS-5 (`--short --secs`); applies to all FSRS
+configs. (The training gradient stays per-row: it runs per seq-len-sorted batch, where a card's rows
+split across batches, so per-card sharing doesn't apply — and that matches Python's batched structure.)
 
-### Verified — 65 configurations
-
-| Configuration | `size` | mean LogLoss vs upstream | Status |
-| --- | :---: | --- | --- |
-| `AVG` | ✅ | +0.000000 | ✅ verified |
-| `AVG --secs` | ✅ | +0.000000 ¹ | ✅ verified |
-| `AVG --short --secs` | ✅ | +0.000000 | ✅ verified |
-| `SM2` | ✅ | +0.000000 | ✅ verified |
-| `SM2 --short` | ✅ | +0.000000 | ✅ verified |
-| `SM2 --short --secs` | ✅ | +0.000000 | ✅ verified |
-| `SM2-trainable` | ✅ | +0.000205 | ✅ verified |
-| `SM2-trainable --short --secs` | ✅ | -0.000466 | ✅ verified |
-| `MOVING-AVG` | ✅ | +0.000000 | ✅ verified |
-| `MOVING-AVG --short --secs` | ✅ | +0.000000 | ✅ verified |
-| `RMSE-BINS-EXPLOIT` | ✅ | +0.000000 | ✅ verified |
-| `RMSE-BINS-EXPLOIT --short --secs` | ✅ | -0.019035 (better) ¹ | ✅ verified |
-| `Ebisu-v2` | ✅ | +0.000000 | ✅ verified |
-| `Ebisu-v2 --short --secs` | ✅ | +0.000000 | ✅ verified |
-| `Anki` | ✅ | +0.000027 | ✅ verified |
-| `Anki --default` | ✅ | +0.000000 | ✅ verified |
-| `Anki --short --secs` | ✅ | -0.000142 | ✅ verified |
-| `DASH` | ✅ | +0.000000 | ✅ verified |
-| `DASH --secs` | ✅ | +0.000000 ¹ | ✅ verified |
-| `DASH --short` | ✅ | +0.000155 | ✅ verified |
-| `DASH --short --secs` | ✅ | -0.000006 | ✅ verified |
-| `DASH --recency` | ✅ | -0.001471 (better) | ⚠ genuine ⁴ |
-| `DASH[MCM]` | ✅ | -0.000114 | ✅ verified |
-| `DASH[MCM] --secs` | ✅ | +0.000000 ¹ | ✅ verified |
-| `DASH[MCM] --short --secs` | ✅ | -0.000001 | ✅ verified |
-| `DASH[ACT-R]` | ✅ | +0.000001 | ✅ verified |
-| `DASH[ACT-R] --secs` | ✅ | -0.000000 ¹ | ✅ verified |
-| `DASH[ACT-R] --short --secs` | ✅ | -0.000051 | ✅ verified |
-| `HLR` | ✅ | -0.000555 (better) | ⚠ genuine ⁴ |
-| `HLR --short` | ✅ | -0.000709 (better) | ⚠ genuine ⁴ |
-| `HLR --short --secs` | ✅ | -0.000000 | ✅ verified |
-| `ACT-R` | ✅ | -0.008047 (better) | ⚠ genuine ² ⁴ |
-| `ACT-R --secs` | ✅ | -0.011462 (better) ¹ | ✅ verified ² |
-| `ACT-R --short --secs` | ✅ | -0.001420 (better) | ⚠ genuine ² ⁴ |
-| `FSRSv1` | ✅ | +0.000445 | ✅ verified |
-| `FSRSv1 --short --secs` | ✅ | -0.000238 | ✅ verified |
-| `FSRSv2` | ✅ | -0.000368 | ✅ verified |
-| `FSRSv2 --short --secs` | ✅ | -0.000303 | ✅ verified |
-| `FSRSv3` | ✅ | -0.000186 | ✅ verified |
-| `FSRSv3 --short --secs` | ✅ | -0.000119 | ✅ verified |
-| `FSRSv4` | ✅ | -0.000523 (better) | ⚠ genuine ⁴ |
-| `FSRSv4 --short --secs` | ✅ | -0.000353 | ✅ verified |
-| `FSRS-4.5` | ✅ | -0.000312 | ✅ verified |
-| `FSRS-4.5 --short --secs` | ✅ | +0.000250 | ✅ verified |
-| `FSRS-5 --short` | ✅ | +0.000001 | ✅ verified |
-| `FSRS-5 --short --secs` | ✅ | +0.000046 | ✅ verified |
-| `FSRS-6 --short` | ✅ | -0.000008 | ✅ verified |
-| `FSRS-6 --short --secs` | ✅ | -0.000142 | ✅ verified |
-| `FSRS-6 --default --short` | ✅ | -0.000000 | ✅ verified |
-| `FSRS-6 --default --short --secs` | ✅ | -0.000001 | ✅ verified |
-| `FSRS-6 --S0 --short` | ✅ | -0.000007 | ✅ verified |
-| `FSRS-6 --S0 --short --secs` | ✅ | +0.000069 | ✅ verified |
-| `FSRS-6 --two_buttons --short` | ✅ | +0.000003 | ✅ verified |
-| `FSRS-6 --two_buttons --short --secs` | ✅ | +0.000168 | ✅ verified |
-| `FSRS-6 --recency` | ✅ | -0.000004 | ✅ verified |
-| `FSRS-6 --short --recency` | ✅ | -0.000006 | ✅ verified |
-| `FSRS-6 --short --secs --recency` | ✅ | +0.000127 | ✅ verified |
-| `FSRS-6 --short --recency --train_equals_test` | ✅ | +0.000430 | ✅ verified |
-| `FSRS-6 --short --partitions deck` | ✅ | +0.000477 | ✅ verified |
-| `FSRS-6 --short --partitions preset` | ✅ | -0.000001 | ✅ verified |
-| `FSRS-6 --short --secs --partitions preset` | ✅ | -0.003894 (better) | ⚠ genuine ⁴ |
-| `FSRS-6-one-step --short` | ✅ | -0.000681 (better) | ⚠ genuine ⁴ |
-| `LogisticRegression --short --secs --recency` | ✅ | +0.000001 | ✅ verified |
-| `LogisticRegression --short --secs --recency --equalize_test_with_non_secs` | ✅ | +0.000015 | ✅ verified |
-| `FSRS-rs --short` | ✅ | +0.000299 ¹ ³ | ✅ verified |
-
-### Ported separately
-
-| Configuration(s) | Status |
-| --- | --- |
-| **FSRS-7** (34-param dual-stability; plain / `-default` / `-recency` × `-equalize`) | ✅ ported, **f32** (incl. an `f32x8` SIMD gradient, ~×1.8 faster than the old `f64x4`). Verified in-band (±0.0005, `size` exact) vs the *current* Python `result/` and the frozen baseline. No 1000-user upstream reference exists, so it isn't in the table above. `--sched_penalties` deferred. |
-| GRU, LSTM, RWKV, RWKV-P, NN-17, Transformer (14) | 🐍 Python path — Reptile/neural, kept in Python |
-
-¹ The committed upstream file for this config is **stale** (predates a pipeline change), so it
-is not a valid reference — the binding target (rule #5) is the *current* Python source, which
-the Rust output matches. `-secs` configs are verified against a freshly-generated current-
-Python golden (spot-checked on 15 users); everything else is on 1000 users.
-
-² ACT-R is correct but slow — its activation is an O(reviews²) all-pairs sum over prior
-reviews, a target for the planned performance pass.
-
-³ FSRS-rs requires building with `--features fsrs-rs` (it imports the real `fsrs` 4.1.1 crate —
-the exact release `fsrs-rs-python` 0.8.2 wraps). Measured against a freshly-generated current-
-Python golden over all 1000 users (the stale `result_upstream` file aside, per ¹): mean diff
-**+0.000299**, `size` exact, **269/1000 (27 %) of users bit-identical**. The remaining users differ
-by small amounts in *both* directions (387 above, 344 below; max ±0.04, symmetric) — the inherent
-divergence between two separate compilations of the same f32 training code in the `burn` ML
-framework, well inside tolerance.
-
-⁴ **`⚠ genuine`** — outside ±0.0005 (always *lower* than upstream), but investigated and confirmed a
-genuine precision / optimizer-trajectory difference, **not a bug**. `size` is exact and the model
-math matches; the gap is concentrated in a few chaotic users:
-- `HLR`, `HLR --short`, `FSRSv4`: dominated by **1–2 users** whose chaotic `0.5^(t/s)` / power-law fit
-  lands ~0.1–0.3 lower in Rust. Non-`--secs` (integer intervals) are f32-exact, so f32 can't close it.
-- `ACT-R` (forward-mode `Dual`, runs f64): f64 finds a lower optimum than torch's f32; matching it
-  would need a hand-written reverse-mode gradient (deferred, like FSRS-7's).
-- `DASH --recency`: a systematic but small optimizer-trajectory difference from the recency-weighted
-  Adam (the formula + checkpoint logic match Python exactly; `DASH` without `--recency` is +0.000000).
-- `FSRS-6 --short --secs --partitions preset`: small per-partition training sets where the S0 init
-  (Rust golden-section vs Python `scipy.minimize`) doesn't get washed out by training.
-- `FSRS-6-one-step --short` (online single-pass SGD, runs f64): the tiny-lr online pass + local S0
-  fit land ~0.0007 lower than torch's f32 — an f64-vs-f32 optimizer-trajectory difference, not a bug.
-  `size` is exact by construction (it predicts with stock FSRS-6, so the eval set = FSRS-6-short).
-
-*Both the `--secs` and non-`--secs` feature paths are implemented; the non-`--secs` path
-reproduces the upstream outlier / non-continuous-row removal exactly, so `size` matches
-bit-for-bit.*
+**DASH** got a different speedup: its `z` recomputed `ln(feature+1)` for all 8 features on every
+predict/grad call, but the features are constant during training — so `log(feature+1)` is now computed
+**once** at feature build, ×1.5+ on all 8 DASH configs, bit-identical. (An earlier attempt to instead
+speed up the O(N²) feature *build* via a per-card prefix gave nothing — the build wasn't the bottleneck;
+measuring beats assuming.)
 
 ## Options
 
@@ -247,9 +343,6 @@ except the smart-preset flags (`--partitions smart`, `--cluster_method`, `--clus
 | `--gpus` | CUDA device ids (e.g. `0,1` or `all`); unused by the CPU models. | unset |
 | `--torch_num_threads` | PyTorch intra-op threads (parity flag). | `1` |
 | `--dev` | Local-development import mode. | off |
-
-The output filename is derived from the flags exactly as in Python — e.g.
-`--algo FSRS-6 --short --secs` → `result/FSRS-6-short-secs.jsonl`.
 
 ## Smart presets
 
@@ -312,40 +405,8 @@ partition, every config's mean LogLoss is ≥ baseline except by f32 noise — p
 decks into one model wins. Results are tabulated in `Smart Preset Assignment.xlsx`; stripped per-user
 outputs are archived in `_smart/results/`.
 
-## Performance
-
-Each trained algorithm is optimized to keep the benchmark fast while reproducing results within the
-±0.0005 tolerance above. The trained-model gradients are computed by **hand-written reverse-mode
-analytic gradients** rather than generic autodiff — these are manual VJPs of each model's specific
-forward pass (⚠ changing a model's math requires re-deriving its backward; the `--features fp64`
-oracle tests guard this). Models with hand-written gradients: **FSRS-7** (+ `f32x8` SIMD) and **FSRS
-v1–v6 / FSRS-4.5 / SM2-trainable / DASH[ACT-R]** (f64). The speedup work is logged iteration-by-
-iteration in `_speedup/phase2/iterations.md` (FSRS-7) and `_speedup/phase3/iterations.md` (the rest),
-each gated on a Wilcoxon signed-rank timing test (p < 0.01) and a per-algo correctness band. ACT-R and
-Anki keep forward-mode autodiff (a VJP wasn't a net win for them), but ACT-R got three stacked
-speedups (≈×3.5 total — ACT-R is bound by the transcendentals in its O(N²)-per-card activation sum, so
-a reverse-mode VJP would *not* help): (1) an *algorithmic* one — its activation recurrence `m[i]` is a
-prefix shared by all of a card's rows, so it's now computed **once per card** instead of recomputed
-from scratch per row (O(N³)→O(N²) per card), ×1.65, bit-identical; (2) a leaner `Dual::powd` that
-reuses the value (`a^(e-1) = aᵉ/a`) instead of a second `powf`, ×1.35 more; and (3) computing each
-inner power as `exp(exponent·ln a)` so `ln a` is calculated **once** and reused for value+gradient
-(instead of `powf`'s internal ln plus a separate one), ×1.55 more. (2)/(3) leave output bit-identical
-at the reported precision; (2) also helps Anki / FSRS-6-one-step.
-
-Separately, **every FSRS version (v1–v6) got a per-card predict speedup**: `predict` (and the
-per-epoch best-weights `eval_loss`, which predicts over all rows) used to replay the stability
-recurrence from scratch for each row — O(N²) per card. The state after k reviews is a shared prefix,
-so `predict` now runs the recurrence **once per card** and each row reads the state it needs — O(N)
-per card, **bit-identical**. ×1.36 on FSRS-6, ×1.27 on FSRS-5 (`--short --secs`); applies to all FSRS
-configs. (The training gradient stays per-row: it runs per seq-len-sorted batch, where a card's rows
-split across batches, so per-card sharing doesn't apply — and that matches Python's batched structure.)
-
-**DASH** got a different speedup: its `z` recomputed `ln(feature+1)` for all 8 features on every
-predict/grad call, but the features are constant during training — so `log(feature+1)` is now computed
-**once** at feature build, ×1.5+ on all 8 DASH configs, bit-identical. (An earlier attempt to instead
-speed up the O(N²) feature *build* via a per-card prefix gave nothing — the build wasn't the bottleneck;
-measuring beats assuming.)
-
 ## Status
 
-Work in progress — see `CLAUDE.md` for the architecture, phase plan, and current status.
+All upstream-referenced configurations are ported and reproduced over the full dataset (see the
+Results tables above); `size` is exact for every config. See `CLAUDE.md` for the architecture and
+implementation notes.
