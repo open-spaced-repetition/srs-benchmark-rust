@@ -4,8 +4,9 @@ A Rust port of [**open-spaced-repetition/srs-benchmark**](https://github.com/ope
 built to run the same benchmark **much faster** while reproducing its results. The model
 *definitions* remain authored in Python upstream as the canonical spec; the math for the ported
 algorithms is reimplemented natively in Rust for speed, and the command-line interface mirrors the
-Python `script.py` (same flags, same output filenames). Algorithms that rely on the Reptile optimizer
-(GRU, LSTM) and other neural models keep the upstream Python runtime path.
+Python `script.py` (same flags, same output filenames). The neural models sit outside the benchmark
+tables below: GRU and LSTM have an optional native [`candle`](https://github.com/huggingface/candle)
+build (see [Build](#build)), while RWKV, NN-17, and Transformer are Python-only.
 
 The sections **Introduction**, **Dataset**, **Evaluation**, and the algorithm descriptions below are
 adapted (with minimal changes) from the [upstream README](https://github.com/open-spaced-repetition/srs-benchmark);
@@ -57,8 +58,9 @@ upstream README.
 ### Algorithms and algorithm families
 
 In this Rust port, the Adam-trained and closed-form algorithms below are **reimplemented natively in
-Rust**; the neural models (GRU, LSTM, RWKV, NN-17, Transformer) keep the upstream **Python** runtime and
-are not included in the tables. Descriptions are copied from the upstream README.
+Rust** and appear in the Results tables. The neural models are not in the tables: GRU and LSTM have an
+optional native `candle` implementation (`--features neural`, see [Build](#build)); RWKV, NN-17, and
+Transformer are Python-only. Descriptions are copied from the upstream README.
 
 - Two component or three component* model of memory:
     - FSRS v1 and v2: the initial experimental versions of FSRS, used only by Jarrett Ye.
@@ -111,7 +113,7 @@ tables.
 > implementation-to-implementation comparison. (The Python numbers therefore track the *current*
 > Python source and may differ slightly from the figures published in the upstream README, which can
 > predate code changes — most visibly for FSRS-7.) The neural models (GRU, LSTM, RWKV) and FSRS-rs are
-> not reimplemented here and are omitted; see the upstream README for those.
+> omitted from the tables; see the upstream README for their results.
 
 Following upstream, the results are split into two regimes by how same-day (short-term) reviews are
 treated. The integer-interval ("without same-day reviews") configs evaluate on **9,999** collections;
@@ -319,7 +321,7 @@ except the smart-preset flags (`--partitions smart`, `--cluster_method`, `--clus
 | `--short` | Include short-term (same-day) reviews. | off |
 | `--secs` | Use `elapsed_seconds` (fractional-day intervals) instead of `elapsed_days`. | off |
 | `--default` | Evaluate default parameters (no training). | off |
-| `--recency` | Weight training reviews by recency (`0.25 + 0.75·x³`). | off |
+| `--recency` | Weight training reviews by recency (older reviews count less; the exact weighting differs by model). | off |
 | `--S0` | FSRS-5/6: optimize only the initial-stability parameters. | off |
 | `--sched_penalties` | FSRS-7 scheduling penalties (penalty 1 & 2). | off |
 | `--two_buttons` | Treat Hard and Easy as Good (rating remap). | off |
