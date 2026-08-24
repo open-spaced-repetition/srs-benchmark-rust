@@ -158,6 +158,7 @@ calculated for all reviews. Sorted by Log Loss (lower is better).
 
 | Algorithm | Python Log Loss | Rust Log Loss | Difference (Rust - Python) |
 | --- | ---: | ---: | ---: |
+| FSRS-7 (recency, continuous retraining) † | — | **0.3049** | — |
 | FSRS-7 (recency) | 0.3178 | 0.3179 | +0.0001 |
 | Logistic Regression | 0.3195 | 0.3195 | -0.0000 |
 | FSRS-7 | 0.3206 | 0.3207 | +0.0001 |
@@ -181,6 +182,19 @@ calculated for all reviews. Sorted by Log Loss (lower is better).
 | SM2-trainable | 0.8239 | 0.8235 | -0.0004 |
 | SM2 | 0.9102 | 0.9102 | +0.0000 |
 | RMSE-BINS-EXPLOIT | 4.1287 | 4.1100 | -0.0187 |
+
+> † **Not a like-for-like row.** *FSRS-7 (recency, continuous retraining)* is a Rust-only research
+> configuration (`--retrain_growth 0.003`), not a reproduction of a Python result, so it has no Python
+> column. It refits from the default parameters every time the training set grows by 0.3% — so every
+> prediction is made by a model that has seen ≥99.7% of the history available to it — instead of
+> refitting only at the 5 `TimeSeriesSplit` boundaries, where that figure is 50–83%. It is an **upper
+> bound** on what a user could get by re-optimizing often: 0.317947 → 0.304891 (**−0.013056**), with
+> 99.8% of collections improving, at 97x the CPU. `size` is identical to the other FSRS-7 rows
+> (519,296,315), so the Log Loss covers exactly the same reviews. But a fresher retraining schedule
+> improves *any* trainable algorithm, so this number measures the protocol as much as the model and
+> **should not be ranked against the rows below it**. For context it clears GRU (0.3146) and LSTM
+> (0.3137) but still trails RWKV (0.2974) by 0.0075. See [Research modes](#research-modes) and
+> `_hpprobe/FINDINGS.md`.
 
 **On the larger gaps.** `size` (the per-user review count and its total) is **exact** for every config,
 so the feature pipeline is faithful and the gaps are purely numerical:
