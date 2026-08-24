@@ -130,6 +130,13 @@ two_buttons, S0, default, train_equals_test, the non-`--secs` path. **Smart pres
   removable; the whole-card-vs-`i==2` test is `first_review.elapsed_days <= 0`.
 - **Reference staleness:** some `result_upstream/*.jsonl` predate code changes — bind to *current*
   Python when a config "fails" only vs the stale file.
+- **`--secs`-only configs are BLOCKED (upstream bug, 2026-06-22):** `ACT-R-secs`, `AVG-secs`,
+  `DASH-secs`, `DASH[ACT-R]-secs`, `DASH[MCM]-secs`, `NN-17-secs` (`--algo X --secs`, no `--short`).
+  In srs-benchmark Python, `--secs`-only `size` matches **neither** plain (no flags) **nor**
+  `--short --secs`, but it *should* == plain no-flags (both drop same-day; `--secs` only changes
+  day→sec intervals). So the Python reference is itself buggy → no valid binding target. GitHub issue
+  filed. **Do NOT benchmark these in Rust or touch their result files until upstream is fixed.** The
+  README Log Loss tables already exclude `--secs`-only configs. (Verified live, not just stale files.)
 - **Batch RNG:** `train.rs` reproduces ATen MT19937 + 32-bit Fisher–Yates `randperm` (unit-tested).
 
 ## 9. Smart presets (`--partitions smart`, FSRS-7) — Rust-only extension
@@ -159,7 +166,38 @@ predict (test-only deck → nearest cluster to the user's global params). Eval r
 - **Shared partition fixes** (deck/preset too): missing-`cards` card → partition −1 (Python
   `fillna(-1)`); card-less user → all −1; inadequate-partition double-fallback (→ user-level → INIT_W).
 
-## 10. Conventions
+## 10. Research modes (Rust-only) — `_hpprobe/FINDINGS.md`
+
+Three flags that ask "how much better could FSRS-7 be" instead of reproducing Python. All keep the
+evaluated row set identical to a normal run, so **`size` stays exact** and the LogLoss is directly
+comparable. Full write-up + numbers: **`_hpprobe/FINDINGS.md`**; analysis scripts in `_hpprobe/`.
+
+- **`--retrain_growth <eps>`** (`fsrs_v7::process_geometric`): refit from `INIT_W` whenever the
+  training set has grown by `(1+eps)`, instead of only at the 5 `TimeSeriesSplit` boundaries — an
+  upper bound on re-optimizing often. `TimeSeriesSplit` pools test folds covering exactly
+  `rows[eval_start..]` and the geometric schedule partitions that same range, so `size` is identical
+  by construction. Cost `~n(1+eps)/eps` vs the 5-fold `2.5n` ⇒ eps=1.0 (doubling) is *cheaper* than
+  the status quo; eps=0.003 is 97x. **Result (10k users, eps=0.003, 99.7% freshness): FSRS-7 recency
+  0.317947 → 0.304891 (−0.013056), 99.8% of users improved.** Beats GRU/LSTM, still **+0.0075 short
+  of RWKV** (0.297427) and +0.0389 of RWKV-P. ⚠ Train prefixes are passed as SLICES, never cloned
+  (~1500 refits/user). ⚠ **Chunk long runs** (`--max-user-id 1000, 2000, …`): results are written
+  only after the whole parallel loop, so an unchunked 18 h run loses everything on interrupt.
+- **`--hp_probe` / `--hp_features`**: per-user hyperparameter study (lr/betas/n_epoch). **Conclusion:
+  under a <2x budget there is NOTHING to win (~−0.00008).** A decision tree on user statistics gets
+  −0.000383 CV vs −0.000356 for just always-45-epochs — i.e. nothing; the per-user optimum is not a
+  function of user statistics (a NN would not fix it — the limit is signal, not model class).
+  Per-user selection *does* work but needs real trial runs: 3-way lr choice = −0.000491 at 3.40x CPU
+  (~1.2x wall on 3 cores, since the runs are independent). **Dead ends: selecting then skipping the
+  refit is +0.0058** (losing 20% of training data costs ~10x any tuning gain), and per-fold selection
+  is 4x worse than per-user.
+- **Hypergradient lr** (`train.rs`, `TrainConfig::hyper_beta`, Baydin et al. 2018): free
+  (`dL/da = −∇L(w_t)·u_{t−1}`, one dot product/step), **but worth only −0.000038**. Normalized +
+  multiplicative (`base_lr *= exp(β·cos)`) because the raw dot product scales with the summed loss
+  and batch size; cosine annealing kept on top. `hyper_beta = 0.0` leaves the loop **bit-identical**
+  (verified 30 users). ⚠ `Adam::last_u` is computed as a SEPARATE statement — do NOT factor it out of
+  the parameter update, `(lr*mhat)/d ≠ lr*(mhat/d)` in floating point.
+
+## 11. Conventions
 
 - **One model per file** under `src/models/` (mirrors Python `models/`); each exposes
   `process(ds, cfg) -> ModelOutput`. Shared infra (Adam, cosine LR, MT19937 randperm, train loop) in
