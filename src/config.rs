@@ -88,8 +88,8 @@ pub struct Cli {
     /// factor `(1 + eps)` — an upper bound on what a user could get by re-optimizing often. The
     /// EVALUATED ROWS ARE UNCHANGED (the same rows the 5-fold split pools), so `size` and the
     /// metrics stay directly comparable to the normal run. `0.0` = off.
-    #[arg(long = "retrain_growth", default_value_t = 0.0)]
-    pub retrain_growth: f64,
+    #[arg(long = "reopt_growth", default_value_t = 0.0)]
+    pub reopt_growth: f64,
 
     /// Treat Hard and Easy as Good.
     #[arg(long = "two_buttons", default_value_t = false)]
@@ -187,7 +187,7 @@ pub struct Config {
     pub cluster_distance: String,
     pub hp_probe: bool,
     pub hp_features: bool,
-    pub retrain_growth: f64,
+    pub reopt_growth: f64,
     pub dev_mode: bool,
 
     pub max_user_id: Option<i64>,
@@ -283,8 +283,8 @@ impl Config {
         if cli.hp_features {
             parts.push("-hpfeat".into());
         }
-        if cli.retrain_growth > 0.0 {
-            parts.push(format!("-regrow{}", cli.retrain_growth));
+        if cli.reopt_growth > 0.0 {
+            parts.push(format!("-reopt{}", cli.reopt_growth));
         }
         if cli.dev {
             parts.push("-dev".into());
@@ -324,7 +324,7 @@ impl Config {
             cluster_distance: cli.cluster_distance.clone(),
             hp_probe: cli.hp_probe,
             hp_features: cli.hp_features,
-            retrain_growth: cli.retrain_growth,
+            reopt_growth: cli.reopt_growth,
             dev_mode: cli.dev,
             max_user_id: cli.max_user_id,
             num_processes: cli.processes,

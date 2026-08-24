@@ -172,7 +172,7 @@ Three flags that ask "how much better could FSRS-7 be" instead of reproducing Py
 evaluated row set identical to a normal run, so **`size` stays exact** and the LogLoss is directly
 comparable. Full write-up + numbers: **`_hpprobe/FINDINGS.md`**; analysis scripts in `_hpprobe/`.
 
-- **`--retrain_growth <eps>`** (`fsrs_v7::process_geometric`): refit from `INIT_W` whenever the
+- **`--reopt_growth <eps>`** (`fsrs_v7::process_geometric`): refit from `INIT_W` whenever the
   training set has grown by `(1+eps)`, instead of only at the 5 `TimeSeriesSplit` boundaries — an
   upper bound on re-optimizing often. `TimeSeriesSplit` pools test folds covering exactly
   `rows[eval_start..]` and the geometric schedule partitions that same range, so `size` is identical

@@ -7,7 +7,7 @@ bytes and nothing downstream reads it), keeping metrics/user/size/time_ms. The `
 import gzip, json, os, shutil
 
 SRC, DST = "result", "_hpprobe/results"
-STRIP = ["FSRS-7-short-secs-recency-regrow0.003", "FSRS-7-short-secs-recency-regrow0.05"]
+STRIP = ["FSRS-7-short-secs-recency-reopt0.003", "FSRS-7-short-secs-recency-reopt0.05"]
 GZIP = ["FSRS-7-short-secs-recency-hpprobe", "FSRS-7-short-secs-recency-hpfeat"]
 
 os.makedirs(DST, exist_ok=True)

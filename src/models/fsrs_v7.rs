@@ -331,7 +331,7 @@ pub fn process(ds: &Dataset, cfg: &Config) -> ModelOutput {
     if cfg.partitions != "none" {
         return process_partitioned(ds, cfg, &tc);
     }
-    if cfg.retrain_growth > 0.0 {
+    if cfg.reopt_growth > 0.0 {
         return process_geometric(ds, cfg, &tc);
     }
 
@@ -1593,7 +1593,7 @@ pub fn process_hp_features(ds: &Dataset, cfg: &Config) -> serde_json::Value {
     serde_json::json!({ "folds": out })
 }
 
-/// `--retrain_growth eps`: retrain from the default parameters whenever the training set has grown
+/// `--reopt_growth eps`: retrain from the default parameters whenever the training set has grown
 /// by a factor `(1 + eps)`, instead of only at the 5 `TimeSeriesSplit` boundaries. This is an upper
 /// bound on what a user could reach by re-optimizing often — every prediction is then made by a
 /// model that has seen at least `1/(1+eps)` of the history available to it, versus 50%-83% for the
@@ -1612,7 +1612,7 @@ fn process_geometric(ds: &Dataset, cfg: &Config, tc: &TrainConfig) -> ModelOutpu
     let n = rows.len();
     let test_size = n / (cfg.n_splits + 1);
     let eval_start = n - cfg.n_splits * test_size;
-    let growth = 1.0 + cfg.retrain_growth;
+    let growth = 1.0 + cfg.reopt_growth;
 
     let mut eval_rows = Vec::new();
     let mut p = Vec::new();

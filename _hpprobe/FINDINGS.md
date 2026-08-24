@@ -90,7 +90,7 @@ CPU is 3.4x. That is the only version worth considering.
 
 ---
 
-## Study 2 — how much does optimizing more often buy? (`--retrain_growth`)
+## Study 2 — how much does optimizing more often buy? (`--reopt_growth`)
 
 **Motivation** (Andrew): compare FSRS-7's *best case* against RWKV's *average case*. RWKV does
 delta-rule updates internally, so a frequently-optimized FSRS-7 is the fairer comparison — a
@@ -118,7 +118,7 @@ per user instead of 5. (Sanity check: `growth 0.5` scored **+0.000242**, i.e. WO
 split steps additively by n/6, so it is fresher than a coarse multiplicative schedule near the end.
 Beating it everywhere needs eps <= 0.2.)
 
-**Result — 10,000 users, `--retrain_growth 0.003`, 150.4 h CPU (97x), 17.7 h wall on 10 threads:**
+**Result — 10,000 users, `--reopt_growth 0.003`, 150.4 h CPU (97x), 17.7 h wall on 10 threads:**
 
 | | LogLoss |
 | --- | --- |

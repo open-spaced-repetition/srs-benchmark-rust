@@ -184,7 +184,7 @@ calculated for all reviews. Sorted by Log Loss (lower is better).
 | RMSE-BINS-EXPLOIT | 4.1287 | 4.1100 | -0.0187 |
 
 > † **Not a like-for-like row.** *FSRS-7 (recency, continuous retraining)* is a Rust-only research
-> configuration (`--retrain_growth 0.003`), not a reproduction of a Python result, so it has no Python
+> configuration (`--reopt_growth 0.003`), not a reproduction of a Python result, so it has no Python
 > column. It refits from the default parameters every time the training set grows by 0.3% — so every
 > prediction is made by a model that has seen ≥99.7% of the history available to it — instead of
 > refitting only at the 5 `TimeSeriesSplit` boundaries, where that figure is 50–83%. It is an **upper
@@ -325,7 +325,7 @@ All flags match the Python `script.py`
 ([upstream docs](https://github.com/open-spaced-repetition/srs-benchmark#scriptpy-options)),
 except the smart-preset flags (`--partitions smart`, `--cluster_method`, `--cluster_threshold`,
 `--cluster_sweep`, `--cluster_distance`), which are a Rust-only extension (see [Smart presets](#smart-presets)
-below), and the research flags (`--retrain_growth`, `--hp_probe`, `--hp_features`), which are a Rust-only
+below), and the research flags (`--reopt_growth`, `--hp_probe`, `--hp_features`), which are a Rust-only
 extension too (see [Research modes](#research-modes)).
 
 | Flag | Description | Default |
@@ -361,7 +361,7 @@ extension too (see [Research modes](#research-modes)).
 | `--gpus` | CUDA device ids (e.g. `0,1` or `all`); unused by the CPU models. | unset |
 | `--torch_num_threads` | PyTorch intra-op threads (parity flag). | `1` |
 | `--dev` | Local-development import mode. | off |
-| `--retrain_growth` | **Rust-only, FSRS-7.** Retrain whenever the training set has grown by this factor, instead of only at the 5 `TimeSeriesSplit` boundaries. `0.0` = off. See [Research modes](#research-modes). | `0.0` |
+| `--reopt_growth` | **Rust-only, FSRS-7.** Retrain whenever the training set has grown by this factor, instead of only at the 5 `TimeSeriesSplit` boundaries. `0.0` = off. See [Research modes](#research-modes). | `0.0` |
 | `--hp_probe` | **Rust-only, FSRS-7.** Dump a per-user candidate x fold hyperparameter loss table instead of metrics. ~35x a normal run. | off |
 | `--hp_features` | **Rust-only, FSRS-7.** Dump per-fold summary statistics of each fold's training rows (joins to `--hp_probe` output). Costs one normal pass. | off |
 
@@ -370,10 +370,10 @@ extension too (see [Research modes](#research-modes)).
 Three Rust-only flags that answer "how much better could FSRS-7 be", rather than reproducing Python.
 None of them changes the evaluated row set, so `size` stays exactly comparable to a normal run.
 
-### `--retrain_growth <eps>` — how much does optimizing more often buy?
+### `--reopt_growth <eps>` — how much does optimizing more often buy?
 
 The benchmark retrains at the 5 `TimeSeriesSplit` boundaries, so a prediction is made by a model that
-has seen between 50% and 83% of the history available to it. With `--retrain_growth eps` the model is
+has seen between 50% and 83% of the history available to it. With `--reopt_growth eps` the model is
 instead refit **from the default parameters** whenever the training set has grown by `(1 + eps)`, so
 every prediction sees at least `1/(1+eps)` of its history. It is an upper bound on what a user could
 get by re-optimizing often.
@@ -387,7 +387,7 @@ than the 5-fold schedule; `eps = 0.003` is ~80x. Measured on the full 10,000 use
 (99.7% freshness), FSRS-7 recency improves by **-0.0130** LogLoss — see [Status](#status).
 
 ```bash
-target/release/script --algo FSRS-7 --short --secs --recency --retrain_growth 0.003   --data ../anki-revlogs-10k --processes 10
+target/release/script --algo FSRS-7 --short --secs --recency --reopt_growth 0.003   --data ../anki-revlogs-10k --processes 10
 ```
 
 Long runs should be **chunked** (repeat with `--max-user-id 1000, 2000, ...`): results are written
