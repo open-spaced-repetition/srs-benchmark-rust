@@ -16,6 +16,9 @@ pub struct Adam {
     m: Vec<f64>,
     v: Vec<f64>,
     t: f64,
+    /// The last step's update direction `u = mhat / (sqrt(vhat) + eps)` (before the lr scale).
+    /// Hypergradient descent needs it: `dL/d(lr) = -grad(w_t) . u_{t-1}` (see `train_with_init`).
+    pub last_u: Vec<f64>,
 }
 
 impl Adam {
@@ -27,6 +30,7 @@ impl Adam {
             m: vec![0.0; n],
             v: vec![0.0; n],
             t: 0.0,
+            last_u: vec![0.0; n],
         }
     }
 
@@ -42,6 +46,10 @@ impl Adam {
             self.v[i] = r(self.b2 * self.v[i] + (1.0 - self.b2) * g * g);
             let mhat = r(self.m[i] / bc1);
             let vhat = r(self.v[i] / bc2);
+            // NOTE: `last_u` is computed separately, NOT factored out of the update below —
+            // `(lr*mhat)/d` and `lr*(mhat/d)` differ in floating point, and the update must stay
+            // bit-identical to the pre-hypergradient code. `last_u` only feeds a heuristic.
+            self.last_u[i] = r(mhat / (r(vhat.sqrt()) + self.eps));
             params[i] = r(params[i] - r(lr * mhat / (r(vhat.sqrt()) + self.eps)));
         }
     }
@@ -170,6 +178,9 @@ pub struct TrainConfig {
     /// (FSRS-7's `keep_final_epoch`). Skips the per-epoch eval entirely; the BatchLoader RNG
     /// and weight updates are identical either way, so the trajectory is unchanged.
     pub keep_final: bool,
+    /// Hypergradient-descent step size for the learning rate (Baydin et al. 2018), `0.0` = off.
+    /// See [`train_with_init`]; `0.0` leaves the training loop bit-identical to before.
+    pub hyper_beta: f64,
 }
 
 impl Default for TrainConfig {
@@ -180,6 +191,7 @@ impl Default for TrainConfig {
             n_epoch: 5,
             batch_size: 512,
             keep_final: false,
+            hyper_beta: 0.0,
         }
     }
 }
@@ -212,7 +224,30 @@ pub fn train<M: BatchModel>(m: &M, tc: &TrainConfig) -> Vec<f64> {
     train_with_init(m, tc, init)
 }
 
+/// How far hypergradient descent may drag the base lr away from `TrainConfig::lr` (x/ this).
+const HYPER_LR_RANGE: f64 = 10.0;
+
 /// Train a model from explicit initial parameters (mirrors `Trainer.train`).
+///
+/// # Hypergradient descent (`TrainConfig::hyper_beta > 0`)
+///
+/// Adapts the learning rate DURING the single run instead of searching over runs (Baydin et al.,
+/// "Online Learning Rate Adaptation with Hypergradient Descent", 2018). With `w_t = w_{t-1} - a*u`,
+/// `dL/da = -grad(w_t) . u_{t-1}`, so the hypergradient is one dot product over the model's
+/// parameters — free next to a batch gradient. Gradient descent on `a` then means: raise the lr
+/// when the fresh gradient still points along the previous update (the last step was too small),
+/// lower it when it points against (overshoot).
+///
+/// Two deviations from the paper, both needed to make one `beta` work across every user:
+///  * **normalized + multiplicative.** The raw dot product scales with the loss (a SUM over the
+///    batch) and with the batch size, so a single additive `beta` cannot fit users spanning four
+///    orders of magnitude in review count. This uses the cosine similarity in `[-1,1]` and
+///    `base_lr *= exp(beta*cos)`, which is scale-free.
+///  * **cosine annealing is kept.** The hypergradient drives the BASE lr; the CosineAnnealingLR
+///    factor still multiplies it, so the run still anneals to ~0 at the end. `base_lr` is clamped
+///    to `[lr/HYPER_LR_RANGE, lr*HYPER_LR_RANGE]`.
+///
+/// `hyper_beta == 0.0` leaves the loop bit-identical to the plain-Adam path.
 pub fn train_with_init<M: BatchModel>(m: &M, tc: &TrainConfig, init: Vec<f64>) -> Vec<f64> {
     let n = m.n_rows();
     // Batching: stable sort by seq_len, then contiguous chunks of batch_size.
@@ -231,6 +266,11 @@ pub fn train_with_init<M: BatchModel>(m: &M, tc: &TrainConfig, init: Vec<f64>) -
     let mut gen = Mt19937::new(2023);
     let mut step = 0usize;
     let mut lr = tc.lr; // lr[0] = base; advanced recurrently after each step
+    // Hypergradient path only: the cosine factor is tracked separately (starting at 1.0, same
+    // recurrence) so it can multiply a base lr that moves between steps.
+    let hyper = tc.hyper_beta > 0.0;
+    let mut base_lr = tc.lr;
+    let mut cos_mult = 1.0f64;
 
     for _epoch in 0..tc.n_epoch {
         if !tc.keep_final {
@@ -244,9 +284,27 @@ pub fn train_with_init<M: BatchModel>(m: &M, tc: &TrainConfig, init: Vec<f64>) -
         for &bi in &order_b {
             let mut g = m.grad(&params, &batches[bi]);
             m.grad_mask(&mut g);
+            if hyper {
+                if step > 0 {
+                    let (mut dot, mut ng, mut nu) = (0.0, 0.0, 0.0);
+                    for (gi, ui) in g.iter().zip(&adam.last_u) {
+                        dot += gi * ui;
+                        ng += gi * gi;
+                        nu += ui * ui;
+                    }
+                    let cos = dot / (ng.sqrt() * nu.sqrt() + 1e-12);
+                    base_lr = (base_lr * (tc.hyper_beta * cos).exp())
+                        .clamp(tc.lr / HYPER_LR_RANGE, tc.lr * HYPER_LR_RANGE);
+                }
+                lr = base_lr * cos_mult;
+            }
             adam.step(&mut params, &g, lr);
             m.clip_params(&mut params);
-            lr = cosine_advance(lr, t_max, step);
+            if hyper {
+                cos_mult = cosine_advance(cos_mult, t_max, step);
+            } else {
+                lr = cosine_advance(lr, t_max, step);
+            }
             step += 1;
         }
     }

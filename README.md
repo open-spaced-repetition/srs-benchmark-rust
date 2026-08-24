@@ -310,7 +310,9 @@ measuring beats assuming.)
 All flags match the Python `script.py`
 ([upstream docs](https://github.com/open-spaced-repetition/srs-benchmark#scriptpy-options)),
 except the smart-preset flags (`--partitions smart`, `--cluster_method`, `--cluster_threshold`,
-`--cluster_sweep`, `--cluster_distance`), which are a Rust-only extension (see [Smart presets](#smart-presets) below).
+`--cluster_sweep`, `--cluster_distance`), which are a Rust-only extension (see [Smart presets](#smart-presets)
+below), and the research flags (`--retrain_growth`, `--hp_probe`, `--hp_features`), which are a Rust-only
+extension too (see [Research modes](#research-modes)).
 
 | Flag | Description | Default |
 | --- | --- | --- |
@@ -345,6 +347,46 @@ except the smart-preset flags (`--partitions smart`, `--cluster_method`, `--clus
 | `--gpus` | CUDA device ids (e.g. `0,1` or `all`); unused by the CPU models. | unset |
 | `--torch_num_threads` | PyTorch intra-op threads (parity flag). | `1` |
 | `--dev` | Local-development import mode. | off |
+| `--retrain_growth` | **Rust-only, FSRS-7.** Retrain whenever the training set has grown by this factor, instead of only at the 5 `TimeSeriesSplit` boundaries. `0.0` = off. See [Research modes](#research-modes). | `0.0` |
+| `--hp_probe` | **Rust-only, FSRS-7.** Dump a per-user candidate x fold hyperparameter loss table instead of metrics. ~35x a normal run. | off |
+| `--hp_features` | **Rust-only, FSRS-7.** Dump per-fold summary statistics of each fold's training rows (joins to `--hp_probe` output). Costs one normal pass. | off |
+
+## Research modes
+
+Three Rust-only flags that answer "how much better could FSRS-7 be", rather than reproducing Python.
+None of them changes the evaluated row set, so `size` stays exactly comparable to a normal run.
+
+### `--retrain_growth <eps>` — how much does optimizing more often buy?
+
+The benchmark retrains at the 5 `TimeSeriesSplit` boundaries, so a prediction is made by a model that
+has seen between 50% and 83% of the history available to it. With `--retrain_growth eps` the model is
+instead refit **from the default parameters** whenever the training set has grown by `(1 + eps)`, so
+every prediction sees at least `1/(1+eps)` of its history. It is an upper bound on what a user could
+get by re-optimizing often.
+
+The evaluated rows are unchanged: `TimeSeriesSplit` pools test folds covering exactly
+`rows[eval_start..]`, and the geometric schedule partitions that same range, so `size` is identical
+per user and in the sum.
+
+Cost is `~n*(1+eps)/eps` training rows against the 5-fold `2.5n`. `eps = 1.0` (doubling) is *cheaper*
+than the 5-fold schedule; `eps = 0.003` is ~80x. Measured on the full 10,000 users at `eps = 0.003`
+(99.7% freshness), FSRS-7 recency improves by **-0.0130** LogLoss — see [Status](#status).
+
+```bash
+target/release/script --algo FSRS-7 --short --secs --recency --retrain_growth 0.003   --data ../anki-revlogs-10k --processes 10
+```
+
+Long runs should be **chunked** (repeat with `--max-user-id 1000, 2000, ...`): results are written
+only after the whole parallel loop finishes, so an unchunked 18-hour run loses everything if
+interrupted. Resume then skips the users already in the file.
+
+### `--hp_probe` / `--hp_features` — can hyperparameters be tuned per user?
+
+`--hp_probe` trains every candidate in `models::fsrs_v7::HP_CANDIDATES` twice per fold — once on
+100% of the fold's training rows, once on the first 80% with the last 20% held out for validation —
+and writes the loss sums to `result/<base>-hpprobe.jsonl`. `--hp_features` writes the matching
+per-fold training-set statistics to `result/<base>-hpfeat.jsonl`. Analysis scripts live in
+`_hpprobe/`; the findings are in `_hpprobe/FINDINGS.md`.
 
 ## Smart presets
 

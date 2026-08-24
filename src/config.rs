@@ -69,6 +69,28 @@ pub struct Cli {
     #[arg(long = "sched_penalties", default_value_t = false)]
     pub sched_penalties: bool,
 
+    /// Hyperparameter probe (FSRS-7, research-only): instead of one training run per fold, train
+    /// EVERY candidate in `models::fsrs_v7::HP_CANDIDATES` twice per fold — once on the whole fold
+    /// train set, once on its first 80% (the last 20% is an inner validation set) — and dump the
+    /// per-fold loss sums to `result/<base>-hpprobe.jsonl`. Feeds the per-user hyperparameter
+    /// study; it writes no metrics and is ~30x slower than a normal run.
+    #[arg(long = "hp_probe", default_value_t = false)]
+    pub hp_probe: bool,
+
+    /// Hyperparameter-rule features (FSRS-7, research-only): dump per-fold summary statistics of
+    /// each fold's TRAINING rows to `result/<base>-hpfeat.jsonl`. Joins to the `--hp_probe` loss
+    /// table on (user, fold index). Builds features only — no training, so it costs one normal pass.
+    #[arg(long = "hp_features", default_value_t = false)]
+    pub hp_features: bool,
+
+    /// Geometric retraining schedule (FSRS-7): instead of retraining at the 5 `TimeSeriesSplit`
+    /// boundaries, retrain from the default parameters whenever the training set has grown by a
+    /// factor `(1 + eps)` — an upper bound on what a user could get by re-optimizing often. The
+    /// EVALUATED ROWS ARE UNCHANGED (the same rows the 5-fold split pools), so `size` and the
+    /// metrics stay directly comparable to the normal run. `0.0` = off.
+    #[arg(long = "retrain_growth", default_value_t = 0.0)]
+    pub retrain_growth: f64,
+
     /// Treat Hard and Easy as Good.
     #[arg(long = "two_buttons", default_value_t = false)]
     pub two_buttons: bool,
@@ -163,6 +185,9 @@ pub struct Config {
     pub cluster_threshold: f64,
     pub cluster_sweep: bool,
     pub cluster_distance: String,
+    pub hp_probe: bool,
+    pub hp_features: bool,
+    pub retrain_growth: f64,
     pub dev_mode: bool,
 
     pub max_user_id: Option<i64>,
@@ -252,6 +277,15 @@ impl Config {
         } else if cli.partitions != "none" {
             parts.push(format!("-{}", cli.partitions));
         }
+        if cli.hp_probe {
+            parts.push("-hpprobe".into());
+        }
+        if cli.hp_features {
+            parts.push("-hpfeat".into());
+        }
+        if cli.retrain_growth > 0.0 {
+            parts.push(format!("-regrow{}", cli.retrain_growth));
+        }
         if cli.dev {
             parts.push("-dev".into());
         }
@@ -288,6 +322,9 @@ impl Config {
             cluster_threshold: cli.cluster_threshold,
             cluster_sweep: cli.cluster_sweep,
             cluster_distance: cli.cluster_distance.clone(),
+            hp_probe: cli.hp_probe,
+            hp_features: cli.hp_features,
+            retrain_growth: cli.retrain_growth,
             dev_mode: cli.dev,
             max_user_id: cli.max_user_id,
             num_processes: cli.processes,

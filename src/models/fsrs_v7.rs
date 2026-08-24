@@ -301,7 +301,14 @@ impl BatchModel for Model<'_> {
 }
 
 fn train_config() -> TrainConfig {
-    TrainConfig { lr: 0.0118, betas: (0.70, 0.98), n_epoch: 9, batch_size: 512, keep_final: true }
+    TrainConfig {
+        lr: 0.0118,
+        betas: (0.70, 0.98),
+        n_epoch: 9,
+        batch_size: 512,
+        keep_final: true,
+        hyper_beta: 0.0,
+    }
 }
 
 /// Train one FSRS-7 weight set on `train` (or `INIT_W` for `--default`).
@@ -323,6 +330,9 @@ pub fn process(ds: &Dataset, cfg: &Config) -> ModelOutput {
     }
     if cfg.partitions != "none" {
         return process_partitioned(ds, cfg, &tc);
+    }
+    if cfg.retrain_growth > 0.0 {
+        return process_geometric(ds, cfg, &tc);
     }
 
     let mut eval_rows = Vec::new();
@@ -1375,4 +1385,255 @@ mod tests {
             assert!((num - grad[k]).abs() < 3e-4, "param {k}: {} vs {}", grad[k], num);
         }
     }
+}
+
+// ===================== Hyperparameter probe (`--hp_probe`) =====================
+//
+// Research-only, no metrics. Anki's "Optimize" fits ONE model on ONE training set starting from
+// the default parameters — no warm start, no cross-validation folds. So a per-user hyperparameter
+// rule is only deployable if it can be decided from that training set alone. This probe measures
+// whether such a rule can exist, without committing to one. Per fold, per candidate it records
+// eps-clipped BCE **sums** (so folds pool into the user's LogLoss exactly):
+//
+//   * `test_full` — trained on 100% of the fold's train rows, scored on the fold's test rows.
+//                   `min` over candidates = the (optimistically biased) per-user oracle.
+//   * `val`       — trained on the first 80% of the train rows, scored on the last 20%. This is
+//                   the ONLY selection signal an Anki-side rule could legally use.
+//   * `test_val`  — that same 80%-trained model scored on the fold's test rows; prices the
+//                   "select and skip the refit" variant against "select and refit on 100%".
+//
+// Every candidate trains from `INIT_W`, exactly like a real optimize run.
+
+/// `--hp_probe` candidates: `(name, lr, betas, n_epoch, hyper_beta)` around the FSRS-7 default.
+/// The default must stay at index 0 — the analysis scripts treat it as the baseline.
+///
+/// The `hg*` entries are hypergradient descent on the learning rate (see
+/// [`crate::train::train_with_init`]) — they cost the same as `default` (one dot product per step)
+/// and need NO selection, so they are the only entries here that are free to deploy.
+pub const HP_CANDIDATES: &[(&str, f64, (f64, f64), usize, f64)] = &[
+    ("default", 0.0118, (0.70, 0.98), 9, 0.0),
+    ("ep20", 0.0118, (0.70, 0.98), 20, 0.0),
+    ("ep45", 0.0118, (0.70, 0.98), 45, 0.0),
+    ("lr_half", 0.0059, (0.70, 0.98), 9, 0.0),
+    ("lr_double", 0.0236, (0.70, 0.98), 9, 0.0),
+    ("betas_torch", 0.0118, (0.90, 0.999), 9, 0.0),
+    ("betas_low", 0.0118, (0.50, 0.95), 9, 0.0),
+    ("lr_double_ep20", 0.0236, (0.70, 0.98), 20, 0.0),
+    ("hg0.02", 0.0118, (0.70, 0.98), 9, 0.02),
+    ("hg0.05", 0.0118, (0.70, 0.98), 9, 0.05),
+    ("hg0.15", 0.0118, (0.70, 0.98), 9, 0.15),
+    ("hg0.05_ep20", 0.0118, (0.70, 0.98), 20, 0.05),
+];
+
+fn hp_train_config(c: &(&str, f64, (f64, f64), usize, f64)) -> TrainConfig {
+    TrainConfig {
+        lr: c.1,
+        betas: c.2,
+        n_epoch: c.3,
+        batch_size: 512,
+        keep_final: true,
+        hyper_beta: c.4,
+    }
+}
+
+/// eps-clipped BCE summed over `rows` (sklearn `log_loss` numerator; see `metrics::log_loss`).
+fn hp_bce_sum(rows: &[Row], p: &[f64]) -> f64 {
+    let eps = f64::EPSILON;
+    rows.iter()
+        .zip(p)
+        .map(|(r, &pi)| {
+            let pc = pi.clamp(eps, 1.0 - eps);
+            if r.y == 1 {
+                -pc.ln()
+            } else {
+                -(1.0 - pc).ln()
+            }
+        })
+        .sum()
+}
+
+/// Score `w` on an already-built eval model, returning the BCE sum over its rows.
+fn hp_score(tm: &Model, w: &[f64]) -> f64 {
+    let all: Vec<usize> = (0..tm.rows.len()).collect();
+    hp_bce_sum(&tm.rows, &tm.predict(w, &all))
+}
+
+/// The `(train, test)` folds the research modes evaluate on — the non-partitioned branch of
+/// [`process`], shared so `--hp_probe` and `--hp_features` cannot drift apart.
+fn hp_folds(ds: &Dataset, cfg: &Config) -> Vec<(Vec<Row>, Vec<Row>)> {
+    let rows = &ds.rows;
+    if let Some(eq) = &ds.equalize_splits {
+        eq.iter()
+            .map(|sp| {
+                let train: Vec<Row> = rows[..sp.train_end].to_vec();
+                let test: Vec<Row> = sp.test_idx.iter().map(|&i| rows[i].clone()).collect();
+                (train, test)
+            })
+            .collect()
+    } else {
+        time_series_split(rows.len(), cfg.n_splits)
+            .into_iter()
+            .map(|s| (rows[..s.test_start].to_vec(), rows[s.test_start..s.test_end].to_vec()))
+            .collect()
+    }
+}
+
+/// `--hp_probe`: the per-user candidate × fold loss table. See the section comment above.
+pub fn process_hp_probe(ds: &Dataset, cfg: &Config) -> serde_json::Value {
+    let folds = hp_folds(ds, cfg);
+    let mut out_folds = Vec::new();
+    for (train, test) in folds {
+        let test_model = Model::build(ds, &test, &vec![1.0; test.len()], None, cfg);
+        // Inner validation split: the last 20% of the train rows, chronologically. Needs at least
+        // one row on each side; tiny folds get no validation signal (`val`/`test_val` = null).
+        let cut = train.len() * 4 / 5;
+        let inner = if cut >= 1 && train.len() - cut >= 1 {
+            let itrain: Vec<Row> = train[..cut].to_vec();
+            let ival: Vec<Row> = train[cut..].to_vec();
+            let ival_model = Model::build(ds, &ival, &vec![1.0; ival.len()], None, cfg);
+            Some((itrain, ival_model))
+        } else {
+            None
+        };
+
+        let mut cands = Vec::new();
+        for c in HP_CANDIDATES {
+            let tc = hp_train_config(c);
+            let wf = {
+                let weights = recency_weights_fsrs7(train.len(), cfg.use_recency_weighting);
+                let m = Model::build(ds, &train, &weights, Some(cfg.max_seq_len), cfg);
+                train::train_with_init(&m, &tc, INIT_W.to_vec())
+            };
+            let (val, test_val) = match &inner {
+                Some((itrain, ival_model)) => {
+                    let weights = recency_weights_fsrs7(itrain.len(), cfg.use_recency_weighting);
+                    let m = Model::build(ds, itrain, &weights, Some(cfg.max_seq_len), cfg);
+                    let wv = train::train_with_init(&m, &tc, INIT_W.to_vec());
+                    (
+                        serde_json::json!(hp_score(ival_model, &wv)),
+                        serde_json::json!(hp_score(&test_model, &wv)),
+                    )
+                }
+                None => (serde_json::Value::Null, serde_json::Value::Null),
+            };
+            cands.push(serde_json::json!({
+                "name": c.0,
+                "test_full": hp_score(&test_model, &wf),
+                "val": val,
+                "test_val": test_val,
+            }));
+        }
+
+        out_folds.push(serde_json::json!({
+            "n_train": train.len(),
+            "n_test": test.len(),
+            "n_val": inner.as_ref().map(|(_, m)| m.rows.len()).unwrap_or(0),
+            "cand": cands,
+        }));
+    }
+
+    serde_json::json!({ "folds": out_folds })
+}
+
+/// `--hp_features`: per-fold summary statistics of each fold's TRAINING rows — the only inputs an
+/// Anki-side hyperparameter rule could legally read (Anki's "Optimize" sees one training set and
+/// nothing else). Pairs with the `--hp_probe` loss table: same users, same folds, same order, so
+/// the two files join on `(user, fold index)`.
+///
+/// No training happens here, so this costs one feature-building pass — seconds, not the probe's 35x.
+///
+/// Intervals are summarised as `log1p(delta_t)`: it is defined at 0 and stays ~identity for the
+/// short same-day intervals `--secs` produces, so they are not blown into large negative logs (the
+/// same reason `Dash::from_rows` stores `ln(feat + 1)`).
+pub fn process_hp_features(ds: &Dataset, cfg: &Config) -> serde_json::Value {
+    let mut out = Vec::new();
+    for (train, test) in hp_folds(ds, cfg) {
+        let n = train.len();
+        let nf = n.max(1) as f64;
+
+        let mut cards: Vec<i64> = train.iter().map(|r| r.card_id).collect();
+        cards.sort_unstable();
+        cards.dedup();
+
+        // Button shares. `p_again` is 1 - retention by construction (`features::label` sets
+        // y = 0 iff rating == 1), so retention is NOT a separate feature here.
+        let mut btn = [0usize; 4];
+        for r in &train {
+            if (1..=4).contains(&r.rating) {
+                btn[(r.rating - 1) as usize] += 1;
+            }
+        }
+
+        let mut ldt: Vec<f64> = train.iter().map(|r| r.delta_t.max(0.0).ln_1p()).collect();
+        ldt.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        let median = if ldt.is_empty() { 0.0 } else { ldt[ldt.len() / 2] };
+        let mean = ldt.iter().sum::<f64>() / nf;
+        let sd = (ldt.iter().map(|x| (x - mean) * (x - mean)).sum::<f64>() / nf).sqrt();
+
+        let same_day = train.iter().filter(|r| r.elapsed_days == 0).count() as f64 / nf;
+        let mean_pos = train.iter().map(|r| r.pos as f64).sum::<f64>() / nf;
+
+        out.push(serde_json::json!({
+            "n_train": n,
+            "n_test": test.len(),
+            "n_cards": cards.len(),
+            "reviews_per_card": nf / cards.len().max(1) as f64,
+            "batches": n.div_ceil(512),
+            "p_again": btn[0] as f64 / nf,
+            "p_hard": btn[1] as f64 / nf,
+            "p_good": btn[2] as f64 / nf,
+            "p_easy": btn[3] as f64 / nf,
+            "median_log1p_dt": median,
+            "mean_log1p_dt": mean,
+            "sd_log1p_dt": sd,
+            "same_day_share": same_day,
+            "mean_pos": mean_pos,
+        }));
+    }
+    serde_json::json!({ "folds": out })
+}
+
+/// `--retrain_growth eps`: retrain from the default parameters whenever the training set has grown
+/// by a factor `(1 + eps)`, instead of only at the 5 `TimeSeriesSplit` boundaries. This is an upper
+/// bound on what a user could reach by re-optimizing often — every prediction is then made by a
+/// model that has seen at least `1/(1+eps)` of the history available to it, versus 50%-83% for the
+/// 5-fold schedule.
+///
+/// **The evaluated row set is unchanged.** `time_series_split` pools test folds covering exactly
+/// `rows[eval_start..]` with `eval_start = n - n_splits * (n / (n_splits + 1))`, and the geometric
+/// schedule partitions that same range. So `size` is identical per user and in the sum, and the
+/// metrics are directly comparable to a normal run (rule #6 stays checkable the cheap way).
+///
+/// Cost is `~n*(1+eps)/eps` training rows against the 5-fold `2.5n`, so `eps = 0.006` is ~67x a
+/// normal run. Training prefixes are passed as SLICES, never cloned — at ~1500 retrains per user
+/// the copies would otherwise dominate.
+fn process_geometric(ds: &Dataset, cfg: &Config, tc: &TrainConfig) -> ModelOutput {
+    let rows = &ds.rows;
+    let n = rows.len();
+    let test_size = n / (cfg.n_splits + 1);
+    let eval_start = n - cfg.n_splits * test_size;
+    let growth = 1.0 + cfg.retrain_growth;
+
+    let mut eval_rows = Vec::new();
+    let mut p = Vec::new();
+    let mut last_w = INIT_W.to_vec();
+
+    let mut t = eval_start;
+    while t < n {
+        // Next retrain point: the training set must grow by at least one row, and by at least the
+        // requested factor. `min(n)` keeps the last chunk inside the evaluated range.
+        let next = (((t as f64) * growth).floor() as usize).max(t + 1).min(n);
+        let w = train_weights(ds, &rows[..t], cfg, tc);
+        let test = &rows[t..next];
+        let tm = Model::build(ds, test, &vec![1.0; test.len()], None, cfg);
+        let all: Vec<usize> = (0..tm.rows.len()).collect();
+        for (i, pr) in tm.predict(&w, &all).into_iter().enumerate() {
+            eval_rows.push(tm.rows[i].clone());
+            p.push(pr);
+        }
+        last_w = w;
+        t = next;
+    }
+
+    ModelOutput { eval_rows, p, params: Params::Partitioned(vec![("0".to_string(), last_w)]) }
 }

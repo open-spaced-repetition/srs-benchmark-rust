@@ -46,6 +46,39 @@ fn process_user(cfg: &Config, user_id: i64) -> Result<Value, String> {
         }
     }
 
+    // `--hp_features`: research mode — dump the per-fold training-set features instead of metrics.
+    if cfg.hp_features {
+        if cfg.model_name != "FSRS-7" {
+            return Err(format!("--hp_features only supports FSRS-7 (got {})", cfg.model_name));
+        }
+        let feat = models::fsrs_v7::process_hp_features(&ds, cfg);
+        let mut o = serde_json::Map::new();
+        o.insert("user".into(), Value::from(user_id));
+        o.insert("rows".into(), Value::from(ds.len()));
+        o.insert("folds".into(), feat["folds"].clone());
+        return Ok(Value::Object(o));
+    }
+
+    // `--hp_probe`: research mode — dump a candidate x fold loss table instead of metrics.
+    if cfg.hp_probe {
+        if cfg.model_name != "FSRS-7" {
+            return Err(format!("--hp_probe only supports FSRS-7 (got {})", cfg.model_name));
+        }
+        if cfg.partitions != "none" {
+            return Err("--hp_probe does not support --partitions".into());
+        }
+        let probe = models::fsrs_v7::process_hp_probe(&ds, cfg);
+        let mut o = serde_json::Map::new();
+        o.insert("user".into(), Value::from(user_id));
+        o.insert("rows".into(), Value::from(ds.len()));
+        o.insert("folds".into(), probe["folds"].clone());
+        o.insert(
+            "time_ms".into(),
+            Value::from(crate::metrics::round6(t0.elapsed().as_secs_f64() * 1e3)),
+        );
+        return Ok(Value::Object(o));
+    }
+
     let out = match cfg.model_name.as_str() {
         "AVG" => models::avg::process(&ds, cfg),
         "SM2" => models::sm2::process(&ds, cfg),
