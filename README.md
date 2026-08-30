@@ -354,7 +354,7 @@ extension too (see [Research modes](#research-modes)).
 | `--no_train_same_day` | Exclude `elapsed_days=0` reviews from the train set. | off |
 | `--equalize_test_with_non_secs` | Test only on reviews that the non-`--secs` run would test. | off |
 | `--duration` | Add the review-duration feature (LSTM only). | off |
-| `--raw` | Save raw predictions to `raw/<name>.jsonl`. | off |
+| `--raw` | Save raw predictions to `raw/<name>.jsonl` — one line per user, `{"user", "p", "y"}`, predictions rounded to 4 dp, sorted by user (same format as Python). A full 10,000-user run writes ~5.7 GB. | off |
 | `--file` | Save per-user evaluation TSVs to `evaluation/<name>/`. | off |
 | `--plot` | Save evaluation plots. | off |
 | `--weights` | Save trained model weights. | off |
@@ -364,6 +364,7 @@ extension too (see [Research modes](#research-modes)).
 | `--reopt_growth` | **Rust-only, FSRS-7.** Retrain whenever the training set has grown by this factor, instead of only at the 5 `TimeSeriesSplit` boundaries. `0.0` = off. See [Research modes](#research-modes). | `0.0` |
 | `--hp_probe` | **Rust-only, FSRS-7.** Dump a per-user candidate x fold hyperparameter loss table instead of metrics. ~35x a normal run. | off |
 | `--hp_features` | **Rust-only, FSRS-7.** Dump per-fold summary statistics of each fold's training rows (joins to `--hp_probe` output). Costs one normal pass. | off |
+| `--interval_def` | **Rust-only.** How the `--secs` interval is measured: `stored` (the dataset's `elapsed_seconds` column), `end_to_end`, or `end_to_start`. See [Research modes](#research-modes). | `stored` |
 
 ## Research modes
 
@@ -393,6 +394,30 @@ target/release/script --algo FSRS-7 --short --secs --recency --reopt_growth 0.00
 Long runs should be **chunked** (repeat with `--max-user-id 1000, 2000, ...`): results are written
 only after the whole parallel loop finishes, so an unchunked 18-hour run loses everything if
 interrupted. Resume then skips the users already in the file.
+
+### `--interval_def` — end-to-END vs end-to-START intervals
+
+A review occupies an interval, not an instant: write `start(k)` for when the card is shown and
+`end(k)` for when it is answered, so `duration(k) = end(k) - start(k)`. A dataset's
+`elapsed_seconds` is a diff between two timestamps of the same kind, so which quantity it holds
+depends on how it was built:
+
+| dataset | stored `elapsed_seconds` | |
+| --- | --- | --- |
+| `anki-revlogs-10k` | `end(k) - end(k-1)` | end-to-END |
+| `anki-revlogs-10k-id` | `start(k) - start(k-1)` | start-to-START |
+| — | `start(k) - end(k-1)` | **end-to-START** — the span over which memory actually decays |
+
+`--interval_def end_to_end|end_to_start` recomputes the column. It is exact on
+`anki-revlogs-10k-id`, which carries `review_time`; without timestamps `end_to_end` is the stored
+column and `end_to_start` subtracts this review's own `duration`. `elapsed_days` is never touched.
+
+end-to-START is the better-motivated quantity: `duration(k)` does not exist at prediction time (the
+card has been shown and not yet answered) and it correlates with the outcome, so end-to-END hides a
+prediction-time-unavailable, outcome-correlated quantity inside the interval.
+
+**⚠ `--interval_def stored` is NOT `end_to_end` on the `-id` dataset.** Always pass the definition
+explicitly when comparing datasets. Measured effect and the dataset caveats: `_interval/FINDINGS.md`.
 
 ### `--hp_probe` / `--hp_features` — can hyperparameters be tuned per user?
 

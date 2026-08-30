@@ -91,6 +91,17 @@ pub struct Cli {
     #[arg(long = "reopt_growth", default_value_t = 0.0)]
     pub reopt_growth: f64,
 
+    /// How the `--secs` interval is measured (Rust-only). `stored` uses the dataset's
+    /// `elapsed_seconds` column as-is; `end_to_end` is answer(k)-answer(k-1); `end_to_start` is
+    /// show(k)-answer(k-1), i.e. only the time over which the memory actually decays. end-to-start
+    /// also removes a quantity that is unknown at prediction time and correlates with the outcome
+    /// (a review the user struggles with takes longer). Exact on `anki-revlogs-10k-id`, which has
+    /// `review_time`; on datasets without it, `end_to_end` is the stored column and `end_to_start`
+    /// subtracts this review's own `duration`. Never touches `elapsed_days`.
+    #[arg(long = "interval_def", default_value = "stored",
+          value_parser = ["stored", "end_to_end", "end_to_start"])]
+    pub interval_def: String,
+
     /// Treat Hard and Easy as Good.
     #[arg(long = "two_buttons", default_value_t = false)]
     pub two_buttons: bool,
@@ -188,6 +199,7 @@ pub struct Config {
     pub hp_probe: bool,
     pub hp_features: bool,
     pub reopt_growth: f64,
+    pub interval_def: String,
     pub dev_mode: bool,
 
     pub max_user_id: Option<i64>,
@@ -286,6 +298,11 @@ impl Config {
         if cli.reopt_growth > 0.0 {
             parts.push(format!("-reopt{}", cli.reopt_growth));
         }
+        match cli.interval_def.as_str() {
+            "end_to_end" => parts.push("-e2e".into()),
+            "end_to_start" => parts.push("-e2s".into()),
+            _ => {}
+        }
         if cli.dev {
             parts.push("-dev".into());
         }
@@ -325,6 +342,7 @@ impl Config {
             hp_probe: cli.hp_probe,
             hp_features: cli.hp_features,
             reopt_growth: cli.reopt_growth,
+            interval_def: cli.interval_def.clone(),
             dev_mode: cli.dev,
             max_user_id: cli.max_user_id,
             num_processes: cli.processes,

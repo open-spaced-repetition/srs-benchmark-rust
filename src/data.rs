@@ -19,6 +19,9 @@ pub struct RawRevlogs {
     pub duration: Vec<i64>,
     pub elapsed_days: Vec<i64>,
     pub elapsed_seconds: Vec<i64>,
+    /// `review_time` (epoch ms) — present only in `anki-revlogs-10k-id`, empty otherwise. It holds
+    /// the SHOW time, so `answer(k) = review_time(k) + duration(k)`. Needed by `--interval_def`.
+    pub review_time: Vec<i64>,
 }
 
 impl RawRevlogs {
@@ -144,6 +147,10 @@ fn read_one_parquet(path: &Path, out: &mut RawRevlogs) -> Result<(), String> {
         push_col(&batch, "duration", &mut out.duration)?;
         push_col(&batch, "elapsed_days", &mut out.elapsed_days)?;
         push_col(&batch, "elapsed_seconds", &mut out.elapsed_seconds)?;
+        // Optional: only the `-id` dataset carries it.
+        if batch.column_by_name("review_time").is_some() {
+            push_col(&batch, "review_time", &mut out.review_time)?;
+        }
     }
     Ok(())
 }

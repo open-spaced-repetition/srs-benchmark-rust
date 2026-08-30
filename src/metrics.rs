@@ -171,6 +171,11 @@ pub fn round6(x: f64) -> f64 {
     (x * 1e6).round() / 1e6
 }
 
+/// Round to 4 decimals (matches Python `round(x, 4)`, used for `--raw` predictions).
+pub fn round4(x: f64) -> f64 {
+    (x * 1e4).round() / 1e4
+}
+
 /// Python `round(x)` (no ndigits): round half to even ("banker's rounding").
 pub fn py_round_half_even(x: f64) -> f64 {
     let floor = x.floor();

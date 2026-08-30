@@ -37,7 +37,17 @@ benchmark **faster** while reproducing its results. Commits go directly to `main
 `C:\Users\Andrew\anki-revlogs-10k` — 10000 users, hive-partitioned parquet
 (`revlogs`/`cards`/`decks`, each split `user_id=N`). `--max-user-id 1000` = the rule-#5/#6 subset.
 - `revlogs/user_id=N/*.parquet`: `card_id, day_offset, rating, state, duration, elapsed_days,
-  elapsed_seconds, __index_level_0__` (last = review_th order).
+  elapsed_seconds, __index_level_0__`. **WARNING: `__index_level_0__` is IGNORED by both
+  implementations** — `review_th` is assigned from *file row order* (`features/base.py:91` =
+  `range(1, n+1)`; Rust does the same). The file is already chronological by `day_offset`.
+- **`C:\Users\Andrew\anki-revlogs-10k-id`** — the SAME reviews (identical `rating/state/duration`
+  multiset, verified on 40 users), rebuilt with the dataset-builder's `--show-time`, plus a
+  `review_time` (epoch-ms SHOW time) column and real Anki ids. That flag changes THREE things at
+  once, so a base-vs-`-id` metric diff is NOT an interval-definition effect: (1) `elapsed_seconds`
+  becomes start-to-START instead of end-to-END, (2) the **sort order** becomes show-time (0.584% of
+  rows sit at a different index => different `review_th` => different `TimeSeriesSplit` boundaries),
+  (3) `day_offset` shifts for reviews begun before the day rollover and answered after (12/40
+  users).
 - `cards`: `card_id, note_id, deck_id`. `decks`: `deck_id, parent_id, preset_id`.
 
 ## 3. Per-user pipeline (parallelized with rayon)

@@ -41,3 +41,4 @@ C*Temp*.log
 # Research-mode scratch (detached-run logs); keep the scripts + FINDINGS.md + results/
 _hpprobe/*.log
 _hpprobe/*.cmd
+_idrun/

@@ -7,6 +7,7 @@ mod data;
 mod eval;
 mod features;
 mod hdbscan;
+mod interval;
 mod metrics;
 mod models;
 #[cfg(feature = "neural")]

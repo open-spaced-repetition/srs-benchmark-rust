@@ -17,12 +17,20 @@ use crate::eval::{evaluate, Params};
 use crate::features::create_features;
 use crate::models;
 
-/// Process one user end-to-end (timed). Returns the result JSON object, or an error string.
-fn process_user(cfg: &Config, user_id: i64) -> Result<Value, String> {
+/// Process one user end-to-end (timed). Returns the result JSON object and, with `--raw`, the
+/// per-user raw-prediction line (`{"user", "p", "y"}`) ALREADY SERIALIZED, or an error string.
+///
+/// The raw line is serialized here, in the rayon worker, not collected as a `Value` — exactly as
+/// Python pre-serializes it in its worker. The full run emits ~519M predictions; as `Value` those
+/// would be ~25 GB of boxed numbers held until the final write, against ~4 GB as strings.
+fn process_user(cfg: &Config, user_id: i64) -> Result<(Value, Option<(i64, String)>), String> {
     let t0 = Instant::now();
     let profile = std::env::var_os("FSRS_PROFILE").is_some();
 
-    let raw = read_user_revlogs(&cfg.data_path, user_id)?;
+    let mut raw = read_user_revlogs(&cfg.data_path, user_id)?;
+    // `--interval_def`: rewrite `elapsed_seconds` to end-to-end / end-to-start before any feature
+    // engineering. A no-op for the default (`stored`).
+    crate::interval::apply_interval_def(&mut raw, &cfg.interval_def);
     let t_read = t0.elapsed();
     let mut ds = create_features(&raw, cfg)?;
     let t_feat = t0.elapsed();
@@ -56,7 +64,7 @@ fn process_user(cfg: &Config, user_id: i64) -> Result<Value, String> {
         o.insert("user".into(), Value::from(user_id));
         o.insert("rows".into(), Value::from(ds.len()));
         o.insert("folds".into(), feat["folds"].clone());
-        return Ok(Value::Object(o));
+        return Ok((Value::Object(o), None));
     }
 
     // `--hp_probe`: research mode — dump a candidate x fold loss table instead of metrics.
@@ -76,7 +84,7 @@ fn process_user(cfg: &Config, user_id: i64) -> Result<Value, String> {
             "time_ms".into(),
             Value::from(crate::metrics::round6(t0.elapsed().as_secs_f64() * 1e3)),
         );
-        return Ok(Value::Object(o));
+        return Ok((Value::Object(o), None));
     }
 
     let out = match cfg.model_name.as_str() {
@@ -130,7 +138,17 @@ fn process_user(cfg: &Config, user_id: i64) -> Result<Value, String> {
         );
     }
     let _ = Params::None;
-    Ok(evaluate(&out.eval_rows, &out.p, cfg, user_id, out.params, time_s))
+    // `--raw`: same shape as Python's `utils.evaluate` raw line — predictions rounded to 4 dp,
+    // labels as ints, in evaluation-row order.
+    let raw = cfg.save_raw_output.then(|| {
+        let v = serde_json::json!({
+            "user": user_id,
+            "p": out.p.iter().map(|&x| crate::metrics::round4(x)).collect::<Vec<f64>>(),
+            "y": out.eval_rows.iter().map(|r| r.y).collect::<Vec<i64>>(),
+        });
+        (user_id, to_py_json(&v))
+    });
+    Ok((evaluate(&out.eval_rows, &out.p, cfg, user_id, out.params, time_s), raw))
 }
 
 /// Enumerate user ids from `<data>/revlogs/user_id=*` directories.
@@ -184,6 +202,33 @@ fn to_py_json(value: &Value) -> String {
     let mut ser = serde_json::Serializer::with_formatter(&mut buf, PyFormatter);
     value.serialize(&mut ser).expect("serialize");
     String::from_utf8(buf).expect("utf8")
+}
+
+/// Read an existing raw jsonl as `(user_id, line)` pairs WITHOUT parsing the payload — the lines
+/// carry ~519M numbers in a full run, and `serde_json` would turn a 4 GB file into ~25 GB of boxed
+/// values just to re-emit it verbatim. Every line this writes starts `{"user": N, ...`.
+fn read_existing_lines(path: &Path) -> (Vec<(i64, String)>, std::collections::HashSet<i64>) {
+    let mut vals = Vec::new();
+    let mut set = std::collections::HashSet::new();
+    let Ok(content) = fs::read_to_string(path) else {
+        return (vals, set);
+    };
+    for line in content.lines() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let user = line
+            .strip_prefix("{\"user\": ")
+            .and_then(|r| r.split(',').next())
+            .and_then(|n| n.trim().parse::<i64>().ok());
+        if let Some(u) = user {
+            set.insert(u);
+            vals.push((u, line.to_string()));
+        } else {
+            eprintln!("warning: unparsable raw line in {} (skipped)", path.display());
+        }
+    }
+    (vals, set)
 }
 
 /// Read an existing jsonl into (parsed values, set of user ids) for resume.
@@ -278,13 +323,34 @@ pub fn run(cfg: &Config) -> Result<(), String> {
     let (existing, processed) = read_existing(&result_file);
     let todo: Vec<i64> = users.into_iter().filter(|u| !processed.contains(u)).collect();
 
+    // `--raw`: predictions go to `raw/<name>.jsonl`, one line per user, sorted by user (Python
+    // `sort_jsonl_by_user_lines`). Resume is driven by the RESULT file, so a raw file that is
+    // missing users the result file already has cannot be back-filled without deleting both.
+    let raw_file = PathBuf::from(format!("raw/{}.jsonl", cfg.evaluation_file_name()));
+    let existing_raw = if cfg.save_raw_output {
+        fs::create_dir_all("raw").map_err(|e| e.to_string())?;
+        let (vals, seen) = read_existing_lines(&raw_file);
+        let missing = processed.difference(&seen).count();
+        if missing > 0 {
+            eprintln!(
+                "warning: {} users are in {} but not in {} — delete both to regenerate raw output",
+                missing,
+                result_file.display(),
+                raw_file.display()
+            );
+        }
+        vals
+    } else {
+        Vec::new()
+    };
+
     let pool = rayon::ThreadPoolBuilder::new()
         .num_threads(cfg.num_processes)
         .build()
         .map_err(|e| e.to_string())?;
 
     let t_start = Instant::now();
-    let results: Vec<Value> = pool.install(|| {
+    let results: Vec<(Value, Option<(i64, String)>)> = pool.install(|| {
         todo.par_iter()
             .filter_map(|&user| match process_user(cfg, user) {
                 Ok(v) => Some(v),
@@ -295,12 +361,31 @@ pub fn run(cfg: &Config) -> Result<(), String> {
             })
             .collect()
     });
+    let (results, raws): (Vec<Value>, Vec<Option<(i64, String)>>) = results.into_iter().unzip();
     let makespan = t_start.elapsed().as_secs_f64();
 
     let mut all = existing;
     all.extend(results);
     let n = all.len();
     write_sorted(&result_file, all)?;
+
+    if cfg.save_raw_output {
+        let mut all_raw = existing_raw;
+        all_raw.extend(raws.into_iter().flatten());
+        let nr = all_raw.len();
+        all_raw.sort_by_key(|(u, _)| *u);
+        let mut f = fs::File::create(&raw_file)
+            .map_err(|e| format!("create {}: {e}", raw_file.display()))?;
+        let mut w = io::BufWriter::with_capacity(1 << 20, &mut f);
+        for (_, line) in &all_raw {
+            w.write_all(line.as_bytes())
+                .and_then(|_| w.write_all(b"
+"))
+                .map_err(|e| e.to_string())?;
+        }
+        w.flush().map_err(|e| e.to_string())?;
+        eprintln!("wrote {} raw prediction lines to {}", nr, raw_file.display());
+    }
 
     eprintln!(
         "wrote {} users to {} (makespan {:.3}s, {} workers)",
