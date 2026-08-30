@@ -84,6 +84,21 @@ Flooring every non-sentinel interval at 1 s makes both definitions keep every ro
 predecessor, so the two arms evaluate **identical row sets** (519,486,445 rows, 0 mismatched users)
 and the difference is purely the interval definition. Paired Wilcoxon, two-sided, n = 10,000:
 
+> **⚠ The floor changes the end-to-END arm too, so 3 and 3b are NOT comparable to each other.**
+> It raises 0-second gaps to 1 s, which lets rows through that previously failed `delta_t > 0` —
+> **+191,710 rows** on the e2e side (reviews answered within the same second as the previous
+> answer). Only the numbers *within* a section share a row set:
+>
+> | arm | size | LogLoss | AUC |
+> | --- | ---: | ---: | ---: |
+> | e2e unfloored (§3) | 519,294,735 | 0.317944 | 0.752031 |
+> | e2s unfloored (§3) | 518,399,300 | 0.318275 | 0.751524 |
+> | e2e `min1s` (§3b) | 519,486,445 | 0.317929 | 0.752117 |
+> | e2s `min1s` (§3b) | 519,486,445 | 0.318040 | 0.751862 |
+>
+> §3b is the one to quote: it is the only pair that isolates the interval definition. Neither pair
+> matches the standard benchmark row set, which is the unfloored `stored` column.
+
 | metric | end-to-END | end-to-START | diff | z | p |
 | --- | ---: | ---: | ---: | ---: | ---: |
 | **LogLoss** | 0.317929 | 0.318040 | **+0.000111** | -39.19 | 10^(-335.3) |
