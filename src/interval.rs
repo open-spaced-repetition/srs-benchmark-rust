@@ -29,6 +29,19 @@
 //! So `--interval_def stored` is NOT `end_to_end` on the `-id` dataset. Always pass the definition
 //! explicitly when comparing the two datasets, or the comparison silently mixes in this difference.
 //!
+//! # Flooring the interval (`--min_interval_secs`)
+//!
+//! `end-to-start = end-to-end - duration(k)` and `duration >= 0`, so the end-to-start interval is
+//! always <= the end-to-end one. A row is evaluated only if its interval is >= 1 s (the pipeline's
+//! `delta_t > 0`, and `elapsed_seconds` is whole seconds), so switching to end-to-start silently
+//! DROPS rows whose own duration was nearly the whole gap — 0.1724% of reviews, and they are easier
+//! than average (recall 0.9208 vs 0.8577), which biases any comparison against end-to-start.
+//!
+//! `--min_interval_secs 1` floors every non-sentinel interval, so both definitions evaluate exactly
+//! the same rows (every row with a predecessor survives) and the comparison is properly paired. It
+//! applies to `stored` too, so it is a plain, predictable knob rather than a per-definition special
+//! case. `0` (the default) leaves everything unchanged.
+//!
 //! `elapsed_days` is deliberately untouched: it is a calendar-day index difference matching Anki's
 //! scheduling semantics, "subtract a duration" is not well defined on a day index, and the effect at
 //! day resolution is ~0.001% anyway.
@@ -45,13 +58,18 @@ use crate::data::RawRevlogs;
 ///
 /// The clamp to zero happens BEFORE the conversion to whole seconds. Truncating -0.4 s would give
 /// -1, silently minting a fake "first review" — the sentinel value.
-pub fn apply_interval_def(raw: &mut RawRevlogs, interval_def: &str) {
+pub fn apply_interval_def(raw: &mut RawRevlogs, interval_def: &str, min_interval_secs: i64) {
+    let floor_to = min_interval_secs.max(0);
     let end_to_start = match interval_def {
-        "stored" => return,
+        "stored" => {
+            apply_floor(raw, floor_to);
+            return;
+        }
         "end_to_start" => true,
         "end_to_end" => false,
         other => {
             eprintln!("warning: unknown --interval_def {other}, using the stored column");
+            apply_floor(raw, floor_to);
             return;
         }
     };
@@ -83,6 +101,20 @@ pub fn apply_interval_def(raw: &mut RawRevlogs, interval_def: &str) {
             }
         }
     }
+    apply_floor(raw, floor_to);
+}
+
+/// Raise every non-sentinel interval to at least `floor_to` seconds. The `-1` sentinel ("no known
+/// previous review") is left alone — raising it would mint a fake interval for a card's first row.
+fn apply_floor(raw: &mut RawRevlogs, floor_to: i64) {
+    if floor_to <= 0 {
+        return;
+    }
+    for v in &mut raw.elapsed_seconds {
+        if *v >= 0 && *v < floor_to {
+            *v = floor_to;
+        }
+    }
 }
 
 #[cfg(test)]
@@ -108,11 +140,11 @@ mod tests {
     #[test]
     fn end_to_end_and_start_from_timestamps() {
         let mut r = raw2();
-        apply_interval_def(&mut r, "end_to_end");
+        apply_interval_def(&mut r, "end_to_end", 0);
         assert_eq!(r.elapsed_seconds, vec![-1, 100]); // 100_300 ms -> 100 s
 
         let mut r = raw2();
-        apply_interval_def(&mut r, "end_to_start");
+        apply_interval_def(&mut r, "end_to_start", 0);
         assert_eq!(r.elapsed_seconds, vec![-1, 100]); // 100_000 ms -> 100 s
     }
 
@@ -123,7 +155,7 @@ mod tests {
         let mut r = raw2();
         r.review_time = vec![1000, 1600]; // gap to prev answer = 100 ms, duration 300 ms
         r.elapsed_seconds = vec![-1, 0];
-        apply_interval_def(&mut r, "end_to_start");
+        apply_interval_def(&mut r, "end_to_start", 0);
         assert_eq!(r.elapsed_seconds[1], 0);
     }
 
@@ -132,20 +164,44 @@ mod tests {
         let mut r = raw2();
         r.review_time = Vec::new(); // the published dataset has no timestamps
         r.elapsed_seconds = vec![-1, 100]; // stored = end-to-end
-        apply_interval_def(&mut r, "end_to_start");
+        apply_interval_def(&mut r, "end_to_start", 0);
         assert_eq!(r.elapsed_seconds, vec![-1, 99]); // 100_000 - 300 ms -> 99 s
 
         let mut r = raw2();
         r.review_time = Vec::new();
-        apply_interval_def(&mut r, "end_to_end");
+        apply_interval_def(&mut r, "end_to_end", 0);
         assert_eq!(r.elapsed_seconds, vec![-1, 100]); // no-op
+    }
+
+    #[test]
+    fn floor_raises_short_gaps_but_never_the_sentinel() {
+        // The whole point: with a floor both definitions keep every non-sentinel row, so the two
+        // arms evaluate identical row sets and the comparison is properly paired.
+        let mut r = raw2();
+        r.review_time = vec![1000, 1600]; // end-to-start gap = -200 ms -> clamps to 0 s
+        r.elapsed_seconds = vec![-1, 0];
+        apply_interval_def(&mut r, "end_to_start", 1);
+        assert_eq!(r.elapsed_seconds, vec![-1, 1]); // sentinel untouched, 0 raised to 1
+
+        // ...and a genuinely long gap is not disturbed.
+        let mut r = raw2();
+        apply_interval_def(&mut r, "end_to_start", 1);
+        assert_eq!(r.elapsed_seconds, vec![-1, 100]);
+    }
+
+    #[test]
+    fn floor_applies_to_the_stored_column_too() {
+        let mut r = raw2();
+        r.elapsed_seconds = vec![-1, 0];
+        apply_interval_def(&mut r, "stored", 1);
+        assert_eq!(r.elapsed_seconds, vec![-1, 1]);
     }
 
     #[test]
     fn sentinel_is_kept_for_the_first_review_of_a_card() {
         let mut r = raw2();
         r.card_id = vec![7, 8]; // two different cards -> neither has a predecessor
-        apply_interval_def(&mut r, "end_to_start");
+        apply_interval_def(&mut r, "end_to_start", 0);
         assert_eq!(r.elapsed_seconds, vec![-1, -1]);
     }
 }

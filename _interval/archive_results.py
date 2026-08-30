@@ -14,6 +14,8 @@ SRC = {
     "id-stored":    "_idrun/result/FSRS-7-short-secs-recency.jsonl",
     "id-e2e":       "_idrun/result/FSRS-7-short-secs-recency-e2e.jsonl",
     "id-e2s":       "_idrun/result/FSRS-7-short-secs-recency-e2s.jsonl",
+    "id-e2e-min1s": "_idrun/result/FSRS-7-short-secs-recency-e2e-min1s.jsonl",
+    "id-e2s-min1s": "_idrun/result/FSRS-7-short-secs-recency-e2s-min1s.jsonl",
 }
 
 os.makedirs(DST, exist_ok=True)

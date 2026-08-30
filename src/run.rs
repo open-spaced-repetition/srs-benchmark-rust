@@ -30,7 +30,7 @@ fn process_user(cfg: &Config, user_id: i64) -> Result<(Value, Option<(i64, Strin
     let mut raw = read_user_revlogs(&cfg.data_path, user_id)?;
     // `--interval_def`: rewrite `elapsed_seconds` to end-to-end / end-to-start before any feature
     // engineering. A no-op for the default (`stored`).
-    crate::interval::apply_interval_def(&mut raw, &cfg.interval_def);
+    crate::interval::apply_interval_def(&mut raw, &cfg.interval_def, cfg.min_interval_secs);
     let t_read = t0.elapsed();
     let mut ds = create_features(&raw, cfg)?;
     let t_feat = t0.elapsed();

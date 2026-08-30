@@ -102,6 +102,13 @@ pub struct Cli {
           value_parser = ["stored", "end_to_end", "end_to_start"])]
     pub interval_def: String,
 
+    /// Floor every non-sentinel `--secs` interval at this many seconds (Rust-only). end-to-start is
+    /// always <= end-to-end, so it silently drops rows whose interval falls below the pipeline's
+    /// 1-second threshold; flooring makes both definitions evaluate the SAME rows, which is what a
+    /// paired comparison needs. `0` = off.
+    #[arg(long = "min_interval_secs", default_value_t = 0)]
+    pub min_interval_secs: i64,
+
     /// Treat Hard and Easy as Good.
     #[arg(long = "two_buttons", default_value_t = false)]
     pub two_buttons: bool,
@@ -200,6 +207,7 @@ pub struct Config {
     pub hp_features: bool,
     pub reopt_growth: f64,
     pub interval_def: String,
+    pub min_interval_secs: i64,
     pub dev_mode: bool,
 
     pub max_user_id: Option<i64>,
@@ -303,6 +311,9 @@ impl Config {
             "end_to_start" => parts.push("-e2s".into()),
             _ => {}
         }
+        if cli.min_interval_secs > 0 {
+            parts.push(format!("-min{}s", cli.min_interval_secs));
+        }
         if cli.dev {
             parts.push("-dev".into());
         }
@@ -343,6 +354,7 @@ impl Config {
             hp_features: cli.hp_features,
             reopt_growth: cli.reopt_growth,
             interval_def: cli.interval_def.clone(),
+            min_interval_secs: cli.min_interval_secs,
             dev_mode: cli.dev,
             max_user_id: cli.max_user_id,
             num_processes: cli.processes,

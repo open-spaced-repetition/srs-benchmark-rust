@@ -72,21 +72,45 @@ Same rows, same order, same day assignment; only `elapsed_seconds` moves.
 Only 29.6% of users improve. Per-user `dLogLoss`: median +0.000143, p05 -0.001086, p95 +0.002156 —
 a small systematic shift, not a few outliers.
 
-**Confound, and its direction.** end-to-START drops **895,435 rows (0.1724%)** across 8,686 users:
-removing a whole previous duration pushes sub-second gaps to 0, which then fail the `delta_t > 0`
-filter. Those rows are **easier than average** (recall 0.9208 vs 0.8577), so dropping them
-mechanically *raises* mean log loss. Estimating their contribution (assuming the model predicts them
-at their own base rate) puts it at roughly **+0.00007 of the +0.00033** — about a fifth. The true
-penalty is nearer +0.00026, and the confound makes end-to-start look worse than it is.
+**Confound, and its direction.** end-to-START drops **895,435 rows (0.1724%)** across 8,686 users
+and gains rows for **none** — `end-to-start = end-to-end - duration(k)` and `duration >= 0`, so its
+row set is a strict SUBSET. Removing a whole previous duration pushes sub-second gaps below the
+pipeline's 1 s threshold and they fail the `delta_t > 0` filter. Those rows are **easier than
+average** (recall 0.9208 vs 0.8577), so dropping them mechanically raises mean log loss.
 
-**Interpretation.** The theoretical case for end-to-start is unchanged and still good. What this
-measures is that FSRS-7 was mildly *benefiting* from the leakage: removing a
-prediction-time-unavailable, outcome-correlated quantity costs ~0.0003. That is an argument for
-end-to-start on correctness grounds, not an argument that it improves accuracy.
+### 3b. Properly paired: `--min_interval_secs 1`
+
+Flooring every non-sentinel interval at 1 s makes both definitions keep every row with a
+predecessor, so the two arms evaluate **identical row sets** (519,486,445 rows, 0 mismatched users)
+and the difference is purely the interval definition. Paired Wilcoxon, two-sided, n = 10,000:
+
+| metric | end-to-END | end-to-START | diff | z | p |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| **LogLoss** | 0.317929 | 0.318040 | **+0.000111** | -39.19 | 10^(-335.3) |
+| RMSE | 0.294894 | 0.294918 | +0.000024 | -20.00 | 5.7064e-89 |
+| **RMSE(bins)** | 0.063595 | 0.063574 | **-0.000022** | -9.53 | 1.6442e-21 |
+| AUC | 0.752117 | 0.751862 | -0.000255 | -35.79 | 1.3785e-280 |
+| **MBE** | 0.001843 | 0.001814 | **-0.000029** | -19.59 | 1.9210e-85 |
+
+LogLoss: end-to-start better for 3,058/10,000 users (30.6%); median +0.000045, p05 -0.000384,
+p95 +0.000787.
+
+**Two things the unfloored run got wrong.**
+
+1. The confound was **two-thirds** of the effect, not the ~1/5 first estimated: the LogLoss penalty
+   falls from +0.000331 to +0.000111 once the row sets match.
+2. The direction is **mixed, not uniformly negative**. `RMSE(bins)` flips sign — end-to-start is
+   *better* — and `MBE` improves too. So the **calibration** metrics favour end-to-start while
+   **LogLoss and AUC** favour end-to-end. Dropping 895k easy rows had pushed every metric the same
+   way and hidden that.
+
++0.000111 LogLoss is about a fifth of the +-0.0005 gate: statistically certain at n = 10,000, and
+practically negligible.
 
 The pre-registered prediction (recorded before running: "aggregate LogLoss moves less than the gap
-between adjacent rows of the with-same-day table, and no ranking changes") **holds** — the move is
-0.00033 against a 0.0016 gap to the next row. A flag and a footnote, not a correction.
+between adjacent rows of the with-same-day table, and no ranking changes") **holds comfortably** —
+the properly paired move is 0.000111 (0.00033 unpaired) against a 0.0016 gap to the next row.
+A flag and a footnote, not a correction.
 
 ## 4. Where the effect lives
 

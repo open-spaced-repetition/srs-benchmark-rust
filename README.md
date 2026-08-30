@@ -365,6 +365,7 @@ extension too (see [Research modes](#research-modes)).
 | `--hp_probe` | **Rust-only, FSRS-7.** Dump a per-user candidate x fold hyperparameter loss table instead of metrics. ~35x a normal run. | off |
 | `--hp_features` | **Rust-only, FSRS-7.** Dump per-fold summary statistics of each fold's training rows (joins to `--hp_probe` output). Costs one normal pass. | off |
 | `--interval_def` | **Rust-only.** How the `--secs` interval is measured: `stored` (the dataset's `elapsed_seconds` column), `end_to_end`, or `end_to_start`. See [Research modes](#research-modes). | `stored` |
+| `--min_interval_secs` | **Rust-only.** Floor every non-sentinel `--secs` interval at this many seconds. end-to-start is always ≤ end-to-end, so it drops rows that fall below the pipeline's 1-second threshold; `1` makes both definitions evaluate the same rows, which a paired comparison needs. `0` = off. | `0` |
 
 ## Research modes
 
@@ -417,7 +418,15 @@ card has been shown and not yet answered) and it correlates with the outcome, so
 prediction-time-unavailable, outcome-correlated quantity inside the interval.
 
 **⚠ `--interval_def stored` is NOT `end_to_end` on the `-id` dataset.** Always pass the definition
-explicitly when comparing datasets. Measured effect and the dataset caveats: `_interval/FINDINGS.md`.
+explicitly when comparing datasets.
+
+**⚠ Pair the comparison with `--min_interval_secs 1`.** `end-to-start = end-to-end - duration(k)`
+and `duration ≥ 0`, so end-to-start's row set is a strict *subset*: it drops rows whose interval
+falls under the pipeline's 1-second threshold (0.1724% of reviews, 8,686/10,000 users), and those
+rows are easier than average, which biases the comparison. Flooring makes both arms evaluate
+identical rows. Measured on 10,000 users, properly paired: LogLoss +0.000111, AUC −0.000255, but
+RMSE(bins) −0.000022 and MBE −0.000029 (both *better*) — the calibration metrics favour end-to-start
+while LogLoss and AUC favour end-to-end. Full write-up: `_interval/FINDINGS.md`.
 
 ### `--hp_probe` / `--hp_features` — can hyperparameters be tuned per user?
 
